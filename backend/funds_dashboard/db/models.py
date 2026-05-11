@@ -275,7 +275,7 @@ class SecretConfig(Base):
 
     __tablename__ = "secret_config"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
     ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
@@ -308,7 +308,7 @@ class RuntimeConfig(Base):
 
     __tablename__ = "runtime_config"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
     value: Mapped[str] = mapped_column(
         Text,
@@ -335,7 +335,7 @@ class ConfigAuditLog(Base):
 
     __tablename__ = "config_audit_log"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     action: Mapped[str] = mapped_column(
         SAEnum(
             "create",
