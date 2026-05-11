@@ -305,15 +305,44 @@ def run_daily_fetch(
             snapshots=report_rows,
         )
 
-        session.add(
-            DailyReportProvenance(
-                report_date=trade_date,
-                markdown_path=str(
-                    markdown_path.relative_to(settings.daily_report_output_dir.parent)
-                ),
-                data_source_versions=version,
+        # UPSERT — Linda msg=9589ed01 ruling: "one trade date → one
+        # current daily-report". `--force` reruns update the existing
+        # row in place (data_source_versions / markdown_path /
+        # generated_at) so the dashboard's "today's report" lookup
+        # always finds exactly one match. (Vera msg=3d6bc478 MEDIUM.)
+        existing = session.scalar(
+            select(DailyReportProvenance).where(
+                DailyReportProvenance.report_date == trade_date
             )
         )
+        relative_path = str(
+            markdown_path.relative_to(settings.daily_report_output_dir.parent)
+        )
+        if existing is None:
+            session.add(
+                DailyReportProvenance(
+                    report_date=trade_date,
+                    markdown_path=relative_path,
+                    data_source_versions=version,
+                )
+            )
+        else:
+            # Append the new version to the audit trail token; the
+            # dashboard / RAG ingestion can read every contributing
+            # version without losing history. `generated_at` updates
+            # automatically via the row mutation triggering Python-side
+            # defaults? No — `default=...` only fires on INSERT. Set
+            # `generated_at` explicitly here so the UPDATE actually
+            # reflects the rerun timestamp.
+            existing_versions = existing.data_source_versions or ""
+            joined = (
+                f"{existing_versions},{version}"
+                if existing_versions
+                else version
+            )
+            existing.markdown_path = relative_path
+            existing.data_source_versions = joined
+            existing.generated_at = datetime.now(timezone.utc)
 
         return FetchRunResult(
             data_source_version=version,
