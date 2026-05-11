@@ -11,15 +11,16 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable
 
-from .models import WindFetchAudit
+from .models import EtfDailySnapshot, WindFetchAudit
 from ..wind.redact import redact_secrets
 
 
 if TYPE_CHECKING:  # avoid import cycle at runtime
     from sqlalchemy.orm import Session
 
+    from ..parsers.etf_snapshot import ParsedEtfSnapshot
     from ..wind import WindResult
 
 
@@ -54,3 +55,41 @@ def record_wind_fetch(
     session.add(audit)
     session.flush()  # populate audit.id without committing
     return audit
+
+
+def record_etf_snapshots(
+    session: "Session",
+    parsed_rows: "Iterable[ParsedEtfSnapshot]",
+) -> int:
+    """Persist parser output to `etf_daily_snapshot`.
+
+    `ParsedEtfSnapshot.trade_date` arrives as an ISO string (the
+    parser is pure / doesn't import datetime); convert to `date`
+    here so the model's typed column accepts it.
+
+    Returns the number of rows inserted. Caller (scheduler runner)
+    typically updates the originating `WindFetchAudit.derived_record_count`
+    with this value.
+    """
+    count = 0
+    for parsed in parsed_rows:
+        session.add(
+            EtfDailySnapshot(
+                wind_fetch_audit_id=parsed.wind_fetch_audit_id,
+                data_source_version=parsed.data_source_version,
+                windcode=parsed.windcode,
+                trade_date=date.fromisoformat(parsed.trade_date),
+                name=parsed.name,
+                fund_size_yuan=parsed.fund_size_yuan,
+                nav=parsed.nav,
+                cumulative_nav=parsed.cumulative_nav,
+                change_range=parsed.change_range,
+                iopv=parsed.iopv,
+                forward_discount=parsed.forward_discount,
+                shares=parsed.shares,
+                shares_status=parsed.shares_status,
+            )
+        )
+        count += 1
+    session.flush()
+    return count

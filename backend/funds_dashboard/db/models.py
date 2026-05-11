@@ -86,7 +86,16 @@ class WindFetchAudit(Base):
 
     __tablename__ = "wind_fetch_audit"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        # SQLite's `INTEGER PRIMARY KEY` is the only column type that
+        # autoincrements without an explicit sequence; `BigInteger`
+        # leaves new rows without a generated id and the NOT NULL
+        # constraint fires on insert. Use the SQLite variant so dev
+        # / tests work, while prod Postgres keeps `BIGINT` headroom.
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     wind_tool_name: Mapped[str] = mapped_column(String(120), nullable=False)
     wind_request_payload: Mapped[str] = mapped_column(String, nullable=False)
@@ -100,7 +109,11 @@ class WindFetchAudit(Base):
         String(64), nullable=False, unique=True, index=True
     )
     derived_record_count: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("0")
+        # Both `default=0` (Python-side, for ORM instances that don't
+        # set the value) and `server_default` (DB-side, for raw
+        # INSERTs and migrations) so the column is non-null on every
+        # write path.
+        Integer, nullable=False, default=0, server_default=text("0")
     )
 
     __table_args__ = (
@@ -129,9 +142,23 @@ class EtfDailySnapshot(Base):
 
     __tablename__ = "etf_daily_snapshot"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        # SQLite's `INTEGER PRIMARY KEY` is the only column type that
+        # autoincrements without an explicit sequence; `BigInteger`
+        # leaves new rows without a generated id and the NOT NULL
+        # constraint fires on insert. Use the SQLite variant so dev
+        # / tests work, while prod Postgres keeps `BIGINT` headroom.
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     wind_fetch_audit_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("wind_fetch_audit.id"), nullable=False, index=True
+        # Match the FK target column's effective type on SQLite so the
+        # autoincrement-generated id is comparable on both backends.
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("wind_fetch_audit.id"),
+        nullable=False,
+        index=True,
     )
     data_source_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
 
@@ -190,9 +217,23 @@ class FundCompanyAggregate(Base):
 
     __tablename__ = "fund_company_aggregate"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        # SQLite's `INTEGER PRIMARY KEY` is the only column type that
+        # autoincrements without an explicit sequence; `BigInteger`
+        # leaves new rows without a generated id and the NOT NULL
+        # constraint fires on insert. Use the SQLite variant so dev
+        # / tests work, while prod Postgres keeps `BIGINT` headroom.
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     wind_fetch_audit_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("wind_fetch_audit.id"), nullable=False, index=True
+        # Match the FK target column's effective type on SQLite so the
+        # autoincrement-generated id is comparable on both backends.
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("wind_fetch_audit.id"),
+        nullable=False,
+        index=True,
     )
     data_source_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
 
@@ -234,7 +275,16 @@ class DailyReportProvenance(Base):
 
     __tablename__ = "daily_report_provenance"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        # SQLite's `INTEGER PRIMARY KEY` is the only column type that
+        # autoincrements without an explicit sequence; `BigInteger`
+        # leaves new rows without a generated id and the NOT NULL
+        # constraint fires on insert. Use the SQLite variant so dev
+        # / tests work, while prod Postgres keeps `BIGINT` headroom.
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     report_date: Mapped[date] = mapped_column(Date, nullable=False, unique=True)
     markdown_path: Mapped[str] = mapped_column(String(255), nullable=False)
     generated_at: Mapped[datetime] = mapped_column(
