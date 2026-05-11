@@ -36,6 +36,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any
 
+from .redact import redact_secrets
+
 
 LOG = logging.getLogger(__name__)
 
@@ -126,7 +128,14 @@ class WindClient:
         if self._api_key:
             env["WIND_API_KEY"] = self._api_key
 
-        LOG.info("wind call: %s payload=%s", tool_name, payload_json)
+        # Defence-in-depth: even though the key currently rides on the
+        # subprocess env (never the payload), a future bug or a Wind
+        # tool that echoes config values could put it on a payload
+        # field. Redact before any log handler sees the line — Vera
+        # msg=ca796844 CRITICAL-3.
+        LOG.info(
+            "wind call: %s payload=%s", tool_name, redact_secrets(payload_json)
+        )
         try:
             proc = subprocess.run(
                 argv,

@@ -28,7 +28,8 @@ def serve() -> int:
     """
     settings = get_settings()
     uvicorn.run(
-        "funds_dashboard.main:app",
+        "funds_dashboard.main:make_app",
+        factory=True,
         host=settings.host,
         port=settings.port,
         log_level=settings.log_level.lower(),

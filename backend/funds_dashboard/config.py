@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -66,14 +66,32 @@ class Settings(BaseSettings):
     # Wind aimarket key. Read from the un-prefixed `WIND_API_KEY` env
     # var per the team convention Linda confirmed in msg=91b45123 and
     # feng-lu posted in msg=86df4780. Not committed; .env is git-ignored.
-    # Logged-out / displayed-out forms must always mask this value.
-    wind_api_key: str | None = Field(
+    # `SecretStr` (not raw `str`) so `repr(settings)` / `print(settings)`
+    # masks the value automatically — call `.get_secret_value()` at the
+    # subprocess boundary when actually invoking the Wind CLI.
+    # (Vera msg=ca796844 HIGH-2.)
+    wind_api_key: SecretStr | None = Field(
         default=None,
         alias="WIND_API_KEY",
         description=(
             "Wind aimarket API key. Sourced from `WIND_API_KEY` env "
-            "var (no prefix). Never log this value; mask before any "
-            "stdout / DB write."
+            "var (no prefix). Wrapped in SecretStr to keep "
+            "auto-stringification safe."
+        ),
+    )
+
+    # Master key for the AES-GCM-256 secret store (PBKDF2-600k derived,
+    # port from memo CryptoVault.swift PR #7 SEC-IOS-020). The backend
+    # refuses to start without it — see `create_app()` fail-closed
+    # check. Bootstrap-only env var: once seeded, secrets stay encrypted
+    # in `secret_config` table. (Vera msg=ca796844 CRITICAL-1.)
+    master_key: SecretStr | None = Field(
+        default=None,
+        alias="FUNDS_DASHBOARD_MASTER_KEY",
+        description=(
+            "AES-GCM master key for encrypted secret_config. Backend "
+            "refuses to start without it. Rotation flow uses a "
+            "separate `*_KEY_V2` env + re-encryption migration."
         ),
     )
 

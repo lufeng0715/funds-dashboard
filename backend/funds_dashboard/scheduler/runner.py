@@ -89,6 +89,15 @@ def run_daily_fetch(
     Returns a CLI-style exit code: 0 success, 1 if `force=False` and
     a successful fetch already exists for this date.
     """
+    # Early surface a misconfigured deployment instead of waiting for
+    # the first Wind call to fail with an opaque CLI auth error
+    # (Vera msg=ca796844 MEDIUM-3).
+    if settings.wind_api_key is None:
+        LOG.warning(
+            "WIND_API_KEY is not configured — Wind calls will fail. "
+            "Set the env var or seed via the Phase 0.5 config-Web UI."
+        )
+
     fetch_utc = datetime.now(timezone.utc)
     with session_scope() as session:
         seq = next_seq_for_date(session, trade_date)
@@ -103,6 +112,9 @@ def run_daily_fetch(
         version = make_data_source_version(trade_date, fetch_utc, seq)
         LOG.info("planning fetch: version=%s", version)
         # TODO(@Linda): once the ETF pool and field-dict are final,
-        # call WindClient.call(...) here, persist to audit + derived
-        # tables, and emit the daily-report markdown.
+        # call WindClient.call(...) here, then persist via
+        # `funds_dashboard.db.audit.record_wind_fetch(...)` (which
+        # redacts `ak_*` tokens before insert) and the derived-table
+        # writers. The audit helper is the single secret-redaction
+        # checkpoint per Vera consistency_checks §5 / Nova msg=bccd488e.
     return 0

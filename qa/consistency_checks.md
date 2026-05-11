@@ -419,3 +419,5 @@ pytest tests/test_consistency_checks.py -v
 | §2 Enum value outside allowed set | MEDIUM | No — data quality |
 | §9 Trade date uniqueness violation | LOW | No — uniqueness constraint should prevent |
 | §10 Error path missing raw payload | LOW | No — QA ergonomics |
+| §11 Wind CLI key in argv (ps-aux visible) | CRITICAL | Yes — security breach on shared host |
+| §12 Backend starts without master key | CRITICAL | Yes — secrets unencrypted on boot |

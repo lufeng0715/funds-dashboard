@@ -33,6 +33,7 @@ from sqlalchemy import (
     BigInteger,
     Date,
     DateTime,
+    Enum as SAEnum,
     ForeignKey,
     Index,
     Integer,
@@ -129,14 +130,30 @@ class EtfDailySnapshot(Base):
     forward_discount: Mapped[float | None] = mapped_column(nullable=True)
 
     shares: Mapped[float | None] = mapped_column(nullable=True)
-    # status semantics (per Nova msg=ea6be16d):
-    #   VALID   — numeric value present
-    #   INVALID — Wind returned the literal string "INVALID"
-    #   MISSING — Wind did not return the column at all
-    shares_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    # status semantics (per Nova msg=ea6be16d). The DB-level Enum
+    # constraint prevents an upstream string typo from sneaking in;
+    # Vera msg=ca796844 MEDIUM-2 specifically asked for this.
+    shares_status: Mapped[str] = mapped_column(
+        SAEnum(
+            "VALID",
+            "INVALID",
+            "MISSING",
+            "NOT_APPLICABLE",
+            name="shares_status_enum",
+        ),
+        nullable=False,
+    )
 
     __table_args__ = (
-        UniqueConstraint("windcode", "trade_date", name="uq_etf_daily_code_date"),
+        # `data_source_version` is part of the unique key so a `--force`
+        # rerun for the same (windcode, trade_date) creates a new row
+        # rather than colliding (Vera msg=ca796844 MEDIUM-1).
+        UniqueConstraint(
+            "windcode",
+            "trade_date",
+            "data_source_version",
+            name="uq_etf_daily_code_date_version",
+        ),
     )
 
     audit: Mapped["WindFetchAudit"] = relationship(WindFetchAudit)
@@ -170,8 +187,14 @@ class FundCompanyAggregate(Base):
     etf_aum_yuan: Mapped[float | None] = mapped_column(nullable=True)
 
     __table_args__ = (
+        # Include `data_source_version` so `--force` re-fetches for the
+        # same day don't trigger a UNIQUE conflict. Same reasoning as
+        # `etf_daily_snapshot` above. (Vera msg=ca796844 MEDIUM-1.)
         UniqueConstraint(
-            "company_name", "trade_date", name="uq_fund_company_date"
+            "company_name",
+            "trade_date",
+            "data_source_version",
+            name="uq_fund_company_date_version",
         ),
     )
 
