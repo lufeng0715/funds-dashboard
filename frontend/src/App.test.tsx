@@ -114,6 +114,8 @@ describe('config page', () => {
   })
 
   afterEach(() => {
+    expect(console.log).not.toHaveBeenCalled()
+    expect(console.error).not.toHaveBeenCalled()
     vi.restoreAllMocks()
   })
 
