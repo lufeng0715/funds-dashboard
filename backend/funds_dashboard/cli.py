@@ -67,7 +67,20 @@ def fetch(argv: list[str] | None = None) -> int:
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
     LOG.info("manual fetch: trade_date=%s force=%s", args.trade_date, args.force)
-    return run_daily_fetch(settings, trade_date=args.trade_date, force=args.force)
+    result = run_daily_fetch(settings, trade_date=args.trade_date, force=args.force)
+    LOG.info(
+        "fetch done: version=%s audit_rows=%d derived_rows=%d failed=%s markdown=%s",
+        result.data_source_version,
+        result.audit_rows,
+        result.derived_rows,
+        result.failed_windcodes,
+        result.markdown_path,
+    )
+    # Exit 1 when nothing landed AND we expected something to (e.g.
+    # every Wind call failed). 0 when at least one ETF made it in.
+    if result.audit_rows == 0:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
