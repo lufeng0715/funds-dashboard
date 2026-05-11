@@ -1,0 +1,41 @@
+# --- secrets ---
+.env
+.env.*
+!.env.example
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.venv-*/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- node / frontend ---
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# --- local databases (dev) ---
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# --- editor / OS ---
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
