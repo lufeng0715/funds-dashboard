@@ -1,5 +1,20 @@
 """SQLAlchemy models.
 
+Two table families:
+
+* **Wind-fetch audit + derived** — `wind_fetch_audit`,
+  `etf_daily_snapshot`, `fund_company_aggregate`,
+  `daily_report_provenance`. Linda v3 SSOT schema. Every derived row
+  links back to one fetch via `wind_fetch_audit_id` FK so QA can
+  byte-compare raw vs derived.
+
+* **Encrypted runtime config** (Phase 0.5) — `secret_config`,
+  `runtime_config`, `config_audit_log`. Backs the config-Web page.
+  Secrets are AES-GCM-256 + PBKDF2-600k encrypted (see
+  `funds_dashboard.config_store.crypto`); the ciphertext lives in
+  `SecretConfig.ciphertext` and the algorithm/key version columns
+  travel alongside so decrypt is self-describing.
+
 The schema is anchored on `wind_fetch_audit` — every row of Wind data
 we persist links back to one fetch event (with raw stdout preserved)
 so QA can audit raw vs derived values byte-for-byte. Linda + Vera
@@ -37,7 +52,9 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
+    Text,
     UniqueConstraint,
     text,
 )
@@ -232,5 +249,130 @@ class DailyReportProvenance(Base):
             "Comma-joined list of `data_source_version` tokens that "
             "contributed to this report — typically multiple Wind "
             "fetches (ETF + company aggregate)."
+        ),
+    )
+
+
+# --- encrypted runtime config (Phase 0.5) ----------------------------------
+
+
+class SecretConfig(Base):
+    """One row per encrypted secret (Wind key, LLM provider keys, ...).
+
+    Encryption envelope (see `funds_dashboard.config_store.crypto`):
+    `ciphertext` carries the AES-GCM-256 output (auth tag appended in
+    `cryptography.hazmat`'s convention), `nonce` is the per-row 12-byte
+    GCM nonce, `salt` is the per-row 16-byte PBKDF2 salt. Both version
+    integers travel with the row so decrypt always knows which
+    iteration count + master-key generation to use — no schema-wide
+    coupling to "the current version".
+
+    `name` is the secret's logical identifier (`wind_api_key`,
+    `model_anthropic_api_key`, …). UNIQUE so updates overwrite
+    in-place, but `updated_at` + the `config_audit_log` trail track
+    every change.
+    """
+
+    __tablename__ = "secret_config"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    salt: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    algorithm_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    key_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_by: Mapped[str] = mapped_column(
+        String(120),
+        nullable=False,
+        doc=(
+            "Identity of the actor that wrote this row — `seeded_from_env`, "
+            "`admin:<username>`, or `rotation:v<n>`. Never the secret value."
+        ),
+    )
+
+
+class RuntimeConfig(Base):
+    """Non-sensitive scalar/list config — cron schedules, ETF pools, ...
+
+    The value column is plain TEXT (JSON-encoded for lists/objects); no
+    encryption because nothing here is sensitive. `name` namespacing
+    mirrors `SecretConfig` so the audit log can reference both with
+    one schema.
+    """
+
+    __tablename__ = "runtime_config"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    value: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        doc="JSON-encoded value. Scalar / list / nested object all welcome.",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_by: Mapped[str] = mapped_column(String(120), nullable=False)
+
+
+class ConfigAuditLog(Base):
+    """Tamper-evident trail of every config-store mutation.
+
+    Each row captures who changed which key when and what the action
+    was. Crucially, **secret values never appear here** — the
+    `details` column is JSON metadata only (e.g. `{"old_last4":"y_LP",
+    "new_last4":"abcd"}`). Linda msg=2948fd3d's "operation type,
+    time, IP, field — never the value" requirement.
+    """
+
+    __tablename__ = "config_audit_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    action: Mapped[str] = mapped_column(
+        SAEnum(
+            "create",
+            "update",
+            "delete",
+            "rotate_master_key",
+            "seeded_from_env",
+            "test_connection",
+            name="config_action_enum",
+        ),
+        nullable=False,
+    )
+    config_type: Mapped[str] = mapped_column(
+        SAEnum("secret", "runtime", name="config_type_enum"),
+        nullable=False,
+    )
+    config_name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    actor: Mapped[str] = mapped_column(
+        String(120),
+        nullable=False,
+        doc=(
+            "Identity that performed the action — `seeded_from_env`, "
+            "`admin:<username>`, `rotation:v<n>`. NOT a session token."
+        ),
+    )
+    actor_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+    details: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        doc=(
+            "JSON metadata about the change. MUST NOT include the "
+            "secret value itself — `{old_last4, new_last4}` style only."
         ),
     )
