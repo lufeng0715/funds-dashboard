@@ -240,6 +240,13 @@ td button {
   margin-top: 18px;
 }
 
+.secret-action-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-height: 22px;
+}
+
 .ok {
   color: #1d6b46;
 }
@@ -351,7 +358,6 @@ td input {
   }
 
   .config-section {
-    display: block;
     margin-bottom: 12px;
   }
 

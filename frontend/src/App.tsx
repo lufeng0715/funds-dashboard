@@ -55,8 +55,11 @@ type EtfRow = {
 }
 
 type ThresholdForm = {
-  scale_alert_billion: string
-  daily_change_pct_alert: string
+  scale_surge_pct: string
+  scale_surge_amount_cny: string
+  scale_drop_pct: string
+  scale_drop_amount_cny: string
+  consecutive_flow_days: string
   invalid_policy: string
 }
 
@@ -202,19 +205,33 @@ function buildForms(status: ConfigStatus) {
     },
     etfs: runtimeEtfs(runtime),
     thresholds: {
-      scale_alert_billion: runtimeString(
+      scale_surge_pct: runtimeString(
         runtime,
         'thresholds',
-        'scale_alert_billion',
-        '2',
+        'scale_surge_pct',
+        '10',
       ),
-      daily_change_pct_alert: runtimeString(
+      scale_surge_amount_cny: runtimeString(
         runtime,
         'thresholds',
-        'daily_change_pct_alert',
+        'scale_surge_amount_cny',
         '5',
       ),
-      invalid_policy: 'INVALID/MISSING 不落 0',
+      scale_drop_pct: runtimeString(runtime, 'thresholds', 'scale_drop_pct', '-10'),
+      scale_drop_amount_cny: runtimeString(
+        runtime,
+        'thresholds',
+        'scale_drop_amount_cny',
+        '-5',
+      ),
+      consecutive_flow_days: runtimeString(
+        runtime,
+        'thresholds',
+        'consecutive_flow_days',
+        '5',
+      ),
+      invalid_policy:
+        'INVALID/MISSING/NOT_APPLICABLE 不落 0；份额数据不可用时不打连续流入/流出标签',
     },
     model: {
       mode: runtimeString(runtime, 'model', 'mode', 'rules_only'),
@@ -243,9 +260,13 @@ function App() {
   })
   const [etfs, setEtfs] = useState<EtfRow[]>(DEFAULT_ETF_ROWS)
   const [thresholds, setThresholds] = useState<ThresholdForm>({
-    scale_alert_billion: '2',
-    daily_change_pct_alert: '5',
-    invalid_policy: 'INVALID/MISSING 不落 0',
+    scale_surge_pct: '10',
+    scale_surge_amount_cny: '5',
+    scale_drop_pct: '-10',
+    scale_drop_amount_cny: '-5',
+    consecutive_flow_days: '5',
+    invalid_policy:
+      'INVALID/MISSING/NOT_APPLICABLE 不落 0；份额数据不可用时不打连续流入/流出标签',
   })
   const [modelForm, setModelForm] = useState<ModelForm>({
     mode: 'rules_only',
@@ -528,6 +549,24 @@ function App() {
                 删除 Key
               </button>
             </form>
+            <div className="secret-action-status" aria-live="polite">
+              <OperationStatus
+                state={saveState.wind_secret}
+                labels={{
+                  loading: '保存中',
+                  success: '已替换',
+                  failure: '替换失败，请重试',
+                }}
+              />
+              <OperationStatus
+                state={saveState.delete_secret}
+                labels={{
+                  loading: '删除中',
+                  success: '已删除',
+                  failure: '删除失败，请重试',
+                }}
+              />
+            </div>
 
             <div className="form-grid">
               <label>
@@ -778,30 +817,66 @@ function App() {
 
           <ConfigSection active={activeGroup === '阈值与口径'} title="阈值与口径">
             <div className="policy-lock">
-              <strong>INVALID/MISSING 不落 0</strong>
-              <span>固定策略，不可关闭；前端不自行判断业务标签。</span>
+              <strong>INVALID/MISSING/NOT_APPLICABLE 不落 0</strong>
+              <span>份额数据不可用时不打连续流入/流出标签；前端不自行判断业务标签。</span>
             </div>
             <div className="form-grid">
               <label>
-                规模预警（亿元）
+                scale_surge_pct（%）
                 <input
-                  value={thresholds.scale_alert_billion}
+                  value={thresholds.scale_surge_pct}
                   onChange={(event) =>
                     setThresholds((current) => ({
                       ...current,
-                      scale_alert_billion: event.target.value,
+                      scale_surge_pct: event.target.value,
                     }))
                   }
                 />
               </label>
               <label>
-                日变动预警（%）
+                scale_surge_amount_cny（亿元）
                 <input
-                  value={thresholds.daily_change_pct_alert}
+                  value={thresholds.scale_surge_amount_cny}
                   onChange={(event) =>
                     setThresholds((current) => ({
                       ...current,
-                      daily_change_pct_alert: event.target.value,
+                      scale_surge_amount_cny: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                scale_drop_pct（%）
+                <input
+                  value={thresholds.scale_drop_pct}
+                  onChange={(event) =>
+                    setThresholds((current) => ({
+                      ...current,
+                      scale_drop_pct: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                scale_drop_amount_cny（亿元）
+                <input
+                  value={thresholds.scale_drop_amount_cny}
+                  onChange={(event) =>
+                    setThresholds((current) => ({
+                      ...current,
+                      scale_drop_amount_cny: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                consecutive_flow_days（天）
+                <input
+                  value={thresholds.consecutive_flow_days}
+                  onChange={(event) =>
+                    setThresholds((current) => ({
+                      ...current,
+                      consecutive_flow_days: event.target.value,
                     }))
                   }
                 />
@@ -816,9 +891,16 @@ function App() {
                 type="button"
                 onClick={() =>
                   saveSection('thresholds', {
-                    scale_alert_billion: numberOrText(thresholds.scale_alert_billion),
-                    daily_change_pct_alert: numberOrText(
-                      thresholds.daily_change_pct_alert,
+                    scale_surge_pct: numberOrText(thresholds.scale_surge_pct),
+                    scale_surge_amount_cny: numberOrText(
+                      thresholds.scale_surge_amount_cny,
+                    ),
+                    scale_drop_pct: numberOrText(thresholds.scale_drop_pct),
+                    scale_drop_amount_cny: numberOrText(
+                      thresholds.scale_drop_amount_cny,
+                    ),
+                    consecutive_flow_days: numberOrText(
+                      thresholds.consecutive_flow_days,
                     ),
                     invalid_policy: thresholds.invalid_policy,
                   })
@@ -933,6 +1015,23 @@ function ActionBar({
       {state === 'success' ? <span className="ok">已保存</span> : null}
       {state === 'failure' ? <span className="fail">保存失败，请重试</span> : null}
     </div>
+  )
+}
+
+function OperationStatus({
+  state,
+  labels,
+}: {
+  state?: SaveState
+  labels: Record<Exclude<SaveState, 'idle'>, string>
+}) {
+  if (!state || state === 'idle') {
+    return null
+  }
+  return (
+    <span className={state === 'failure' ? 'fail' : state === 'success' ? 'ok' : ''}>
+      {labels[state]}
+    </span>
   )
 }
 
