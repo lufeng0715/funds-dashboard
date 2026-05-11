@@ -105,8 +105,13 @@ class WindFetchAudit(Base):
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
     )
+    # NOT unique — one scheduled fetch run produces many audit rows
+    # (one per Wind tool call / ETF in the pool), all sharing the
+    # same `data_source_version`. The token is a *grouping* key, not
+    # a primary key. Indexed for fast "show me every row from this
+    # run" lookups (scheduler retry, audit dashboard, eval re-anchor).
     data_source_version: Mapped[str] = mapped_column(
-        String(64), nullable=False, unique=True, index=True
+        String(64), nullable=False, index=True
     )
     derived_record_count: Mapped[int] = mapped_column(
         # Both `default=0` (Python-side, for ORM instances that don't
