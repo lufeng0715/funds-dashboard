@@ -95,6 +95,20 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Bcrypt hash of the admin password. The plaintext is NEVER stored.
+    # Operators generate the hash offline (e.g.
+    # `python -m funds_dashboard.scripts.hash_password`) and stash the
+    # result here. If unset, all admin endpoints reject every login
+    # (`verify_admin_password` returns False).
+    admin_password_hash: str | None = Field(
+        default=None,
+        alias="FUNDS_DASHBOARD_ADMIN_PASSWORD_HASH",
+        description=(
+            "Bcrypt hash of the admin password. Plaintext never stored. "
+            "Empty = no admin can log in (fail-closed)."
+        ),
+    )
+
     # --- scheduler ---
     cron_daily: str = Field(
         default="0 17 * * MON-FRI",

@@ -13,25 +13,22 @@ which is brittle in FastAPI because nested dependency lists merge
 rather than override. (Vera msg=ca796844 HIGH-1.)
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 
 from .auth import require_authenticated_admin
+from .config import router as config_router
 from .health import router as health_router
+from .login import router as login_router
 
 router = APIRouter(prefix="/api/v1")
-# Health = public uptime probe; no auth.
+# Public routes (uptime probe + login flow). Login itself can't require
+# auth — that would be a chicken-and-egg loop.
 router.include_router(health_router)
+router.include_router(login_router)
+router.include_router(config_router)
 
-# Protected sub-routers (data endpoints, config-Web, scheduler controls)
-# attach the auth dependency at include time. Sample wiring for the
-# Phase 0.5 config-Web router lands when that PR ships; the pattern
-# below is the contract every new protected router follows.
-#
-#     from .config import router as config_router
-#     router.include_router(
-#         config_router,
-#         dependencies=[Depends(require_authenticated_admin)],
-#     )
+# Protected sub-routers (config-Web, scheduler controls, data
+# endpoints) attach `Depends(require_authenticated_admin)` on each
+# route that needs the verified `SessionPayload` for audit attribution.
 
-# Re-exported so tests and other modules can probe the auth dep itself.
 __all__ = ["router", "require_authenticated_admin"]
