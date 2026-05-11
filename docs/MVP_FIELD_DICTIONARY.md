@@ -351,3 +351,131 @@ Core fields for MVP:
 - Do not commit `.env` files.
 - Do not write API keys into `wind_fetch_audit`, app logs, markdown reports, frontend payloads, screenshots, or test fixtures.
 - Add a regression test that fails if persisted audit payloads or responses contain a substring matching `ak_`.
+
+## System Configuration Web Page
+
+The configuration page is a separate Web tab named `系统配置`.
+
+### Bootstrap Boundary
+
+These bootstrap values cannot be managed by the Web page because they are needed before the configuration service can decrypt and load settings:
+
+- `FUNDS_DASHBOARD_MASTER_KEY`: master secret used to derive encryption keys. If missing, backend startup must fail closed.
+- Initial config store path and initial database connection for the configuration store.
+- Admin authentication secret/session configuration.
+
+Runtime business settings can be managed in the Web UI after bootstrap.
+
+### Initial Wind Key Seed
+
+For first deployment only, the backend may seed `wind_api_key` from an environment variable if and only if encrypted `secret_config.wind_api_key` is empty.
+
+Rules:
+
+- Read once from `WIND_API_KEY` or `WIND_AIMARKET_KEY`.
+- Write to `secret_config` with AES-GCM encryption.
+- Record an audit event with operation type `seeded_from_env`, without recording the secret value.
+- The frontend must only show masked state such as `已配置 · 待轮换 · ****后4位`.
+- The frontend must not prefill the plaintext key into an input value.
+- After seed succeeds, the deployment environment can remove the temporary Wind key.
+- New keys are entered through "替换 Key", encrypted server-side, and the input is cleared after save.
+
+### Configuration Groups
+
+1. `Wind 数据源`
+   - `wind_api_key` secret.
+   - `wind_cli_path`.
+   - `node_path`.
+   - `wind_timeout_seconds`.
+   - `wind_retry_count`.
+   - `wind_retry_backoff_seconds`.
+   - `测试 Wind 连接`.
+
+2. `调度与日报发布`
+   - `scheduler_cron_daily`.
+   - `scheduler_timezone`.
+   - `manual_rerun_enabled`.
+   - `force_rerun_requires_confirm`.
+   - `daily_report_publish_time`.
+   - `slock_report_channel`.
+   - `daily_report_output_dir`.
+   - `failure_notification_target`.
+
+3. `重点 ETF 池`
+   - Editable rows: `windcode`, `display_name`, `bucket`, `index_or_theme`, `is_active`, `start_date`, `notes`.
+   - Items can be disabled, not hard-deleted, so historical reports remain interpretable.
+
+4. `阈值与口径`
+   - `scale_surge_pct`.
+   - `scale_surge_amount_cny`.
+   - `scale_drop_pct`.
+   - `scale_drop_amount_cny`.
+   - `consecutive_flow_days`.
+   - `missing_value_policy`.
+   - MVP may render these read-only to prevent UI/domain drift.
+
+5. `模型与结论生成`
+   - `analysis_mode`: `rules_only` or `llm_assisted`; MVP default is `rules_only`.
+   - `model_provider`, `model_base_url`, `model_name`, `temperature`, `max_tokens`.
+   - `model_api_key` secret.
+   - LLM output may generate explanation copy but must not override deterministic metric calculations.
+
+6. `系统安全与审计`
+   - Current config version.
+   - Latest update actor/time.
+   - Latest connection test result.
+   - Master-key status.
+   - Secret redaction regression status.
+   - Configuration audit log.
+
+### Configuration Storage
+
+Use separate storage concepts:
+
+- `runtime_config`: non-secret section values as JSON, versioned and auditable.
+- `secret_config`: encrypted secret values with `name`, `encrypted_value`, `nonce`, `salt`, `key_version`, `updated_at`, `updated_by`, and `last4`.
+- `config_audit_log`: operation time, actor, IP, section or secret name, operation type, result, and redacted error summary.
+
+Encryption:
+
+- AES-GCM-256.
+- Key derivation from `FUNDS_DASHBOARD_MASTER_KEY`.
+- PBKDF2-HMAC-SHA256 with versioned parameters; v2 should use 600,000 iterations.
+- Store header/version metadata so future rotation and parameter upgrades are possible.
+- Keep `algorithm_version` and `key_version` separate. `algorithm_version` is for KDF/encryption parameter changes; `key_version` is for master-key rotation.
+
+SecretConfig minimum fields:
+
+| Field | Meaning |
+|---|---|
+| `name` | Secret name such as `wind_api_key`. |
+| `encrypted_value` | AES-GCM ciphertext. |
+| `nonce` | 12-byte AES-GCM nonce. |
+| `salt` | KDF salt. |
+| `algorithm_version` | Example: `2` for PBKDF2-600k + AES-GCM. |
+| `key_version` | Master key generation, starting at `1`. |
+| `last4` | Last 4 characters for masked display only. |
+| `updated_at` | Update timestamp. |
+| `updated_by` | Actor. |
+
+### Configuration API
+
+Minimum endpoints:
+
+- `GET /api/v1/config/schema`: field groups, types, labels, descriptions, secret flags, editability.
+- `GET /api/v1/config/status`: non-secret values, masked secret status, health, last4, updated_at.
+- `PUT /api/v1/config/section/{name}`: update non-secret section.
+- `PUT /api/v1/config/secrets/{name}`: set or rotate secret.
+- `DELETE /api/v1/config/secrets/{name}`: delete secret.
+- `POST /api/v1/config/test/{target}`: test Wind, DB-like targets, report output, or publish target.
+- `GET /api/v1/config/audit`: redacted configuration audit log.
+
+Security requirements:
+
+- Admin-only.
+- TLS or loopback-only during local development.
+- No endpoint may return plaintext or ciphertext secrets.
+- `GET /api/v1/config/status` returns only masked status and metadata.
+- Secret values must not appear in logs, errors, toasts, URLs, localStorage, sessionStorage, screenshots, or exported config.
+- Dangerous operations require confirmation: delete key, change database-like address, change publish channel, force rerun, disable redaction checks.
+- Wind CLI subprocess must receive the decrypted key through subprocess environment only, e.g. `env={..., "WIND_API_KEY": key}`. Do not pass the key through argv because argv is visible via process listings.

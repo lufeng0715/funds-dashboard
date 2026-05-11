@@ -426,8 +426,239 @@ Verify `--force` creates a new `data_source_version` and does not overwrite olde
 Verify no audit payload, response, log, markdown report, frontend payload, or fixture contains a substring matching `ak_`.
 ```
 
+### Task 7: Configuration Web Page and Encrypted Secret Store
+
+**Files:**
+- Create: `funds-dashboard/backend/app/config_store/crypto.py`
+- Create: `funds-dashboard/backend/app/config_store/schema.py`
+- Create: `funds-dashboard/backend/app/routes/config.py`
+- Create: `funds-dashboard/backend/tests/test_config_store.py`
+- Create: `funds-dashboard/frontend/src/pages/SystemConfig.tsx`
+
+- [ ] **Step 1: Write failing tests for secret encryption and masked status**
+
+Create `funds-dashboard/backend/tests/test_config_store.py`:
+
+```python
+import os
+
+import pytest
+
+from app.config_store.crypto import decrypt_secret, encrypt_secret
+from app.config_store.schema import mask_secret
+
+
+def test_encrypt_secret_round_trip_without_plaintext_leak():
+    encrypted = encrypt_secret("ak" + "_example_SECRET", master_key="test-master-key")
+
+    assert encrypted.ciphertext
+    assert "example_SECRET" not in encrypted.ciphertext
+    assert decrypt_secret(encrypted, master_key="test-master-key") == "ak" + "_example_SECRET"
+
+
+def test_mask_secret_returns_prefix_and_last4_only():
+    assert mask_secret("ak" + "_example_SECRET") == "ak_****CRET"
+
+
+def test_missing_master_key_fails_closed(monkeypatch):
+    monkeypatch.delenv("FUNDS_DASHBOARD_MASTER_KEY", raising=False)
+
+    from app.config_store.schema import require_master_key
+
+    with pytest.raises(RuntimeError, match="FUNDS_DASHBOARD_MASTER_KEY is required"):
+        require_master_key()
+
+
+def test_wind_key_is_not_passed_in_subprocess_argv(monkeypatch):
+    from app.services.wind_cli import build_wind_subprocess_call
+
+    secret = "ak" + "_example_SECRET"
+    args, env = build_wind_subprocess_call(
+        cli_path="/tmp/cli.mjs",
+        server_type="fund_data",
+        tool_name="get_fund_price_indicators",
+        payload={"windcode": "588200.SH"},
+        wind_api_key=secret,
+    )
+
+    assert all(secret not in arg for arg in args)
+    assert env["WIND_API_KEY"] == secret
+```
+
+- [ ] **Step 2: Run tests and verify RED**
+
+Run:
+
+```bash
+cd funds-dashboard/backend
+pytest tests/test_config_store.py -v
+```
+
+Expected: FAIL because `app.config_store` does not exist.
+
+- [ ] **Step 3: Implement config crypto helpers**
+
+Create `funds-dashboard/backend/app/config_store/crypto.py`:
+
+```python
+from dataclasses import dataclass
+import base64
+import os
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+
+PBKDF2_ITERATIONS_V2 = 600_000
+
+
+@dataclass(frozen=True)
+class EncryptedSecret:
+    version: int
+    salt: str
+    nonce: str
+    ciphertext: str
+
+
+def _derive_key(master_key: str, salt: bytes, iterations: int = PBKDF2_ITERATIONS_V2) -> bytes:
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=iterations,
+    )
+    return kdf.derive(master_key.encode("utf-8"))
+
+
+def encrypt_secret(plaintext: str, master_key: str) -> EncryptedSecret:
+    salt = os.urandom(16)
+    nonce = os.urandom(12)
+    key = _derive_key(master_key, salt)
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
+    return EncryptedSecret(
+        version=2,
+        salt=base64.b64encode(salt).decode("ascii"),
+        nonce=base64.b64encode(nonce).decode("ascii"),
+        ciphertext=base64.b64encode(ciphertext).decode("ascii"),
+    )
+
+
+def decrypt_secret(secret: EncryptedSecret, master_key: str) -> str:
+    salt = base64.b64decode(secret.salt)
+    nonce = base64.b64decode(secret.nonce)
+    ciphertext = base64.b64decode(secret.ciphertext)
+    key = _derive_key(master_key, salt)
+    return AESGCM(key).decrypt(nonce, ciphertext, None).decode("utf-8")
+```
+
+- [ ] **Step 4: Implement schema helpers**
+
+Create `funds-dashboard/backend/app/config_store/schema.py`:
+
+```python
+import os
+
+
+def require_master_key() -> str:
+    value = os.environ.get("FUNDS_DASHBOARD_MASTER_KEY")
+    if not value:
+        raise RuntimeError("FUNDS_DASHBOARD_MASTER_KEY is required")
+    return value
+
+
+def mask_secret(value: str) -> str:
+    if len(value) <= 8:
+        return "****"
+    if value.startswith("ak_"):
+        return f"ak_****{value[-4:]}"
+    return f"****{value[-4:]}"
+```
+
+- [ ] **Step 5: Run tests and verify GREEN**
+
+Run:
+
+```bash
+cd funds-dashboard/backend
+pytest tests/test_config_store.py -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Add configuration API routes**
+
+Create `funds-dashboard/backend/app/routes/config.py` with these endpoints:
+
+```python
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/api/v1/config", tags=["config"])
+
+
+@router.get("/status")
+def get_config_status():
+    return {
+        "secrets": {
+            "wind_api_key": {
+                "configured": False,
+                "masked": None,
+                "status": "missing",
+            }
+        }
+    }
+```
+
+Expand this skeleton after SQLAlchemy models are merged.
+
+### Task 8: Configuration UI
+
+**Files:**
+- Create: `funds-dashboard/frontend/src/pages/SystemConfig.tsx`
+
+- [ ] **Step 1: Create configuration page skeleton**
+
+Create:
+
+```tsx
+export function SystemConfig() {
+  return (
+    <main>
+      <h1>系统配置</h1>
+      <nav aria-label="配置分组">
+        <button>Wind 数据源</button>
+        <button>调度与日报发布</button>
+        <button>重点 ETF 池</button>
+        <button>阈值与口径</button>
+        <button>模型与结论生成</button>
+        <button>系统安全与审计</button>
+      </nav>
+      <section aria-label="Wind 数据源">
+        <label htmlFor="wind-api-key">Wind API Key</label>
+        <input id="wind-api-key" type="password" autoComplete="off" />
+        <button type="button">测试 Wind 连接</button>
+        <button type="button">保存/替换 Key</button>
+      </section>
+    </main>
+  );
+}
+```
+
+- [ ] **Step 2: Enforce frontend secret constraints**
+
+When wiring API calls:
+
+```tsx
+const saveSecret = async (value: string) => {
+  await api.config.setSecret('wind_api_key', value)
+  setInputValue('')
+}
+```
+
+The page must not store secret values in localStorage, sessionStorage, URL params, logs, or toast messages.
+
 ### Self-Review
 
-- Spec coverage: Covers Wind audit, ETF snapshot, scale decomposition, company aggregate, markdown provenance, UI constraints, QA hooks.
+- Spec coverage: Covers Wind audit, ETF snapshot, scale decomposition, company aggregate, markdown provenance, UI constraints, QA hooks, and encrypted Web configuration.
 - Placeholder scan: No `TBD` or unspecified behavior remains in the MVP plan.
 - Type consistency: `data_source_version`, `wind_fetch_audit_id`, and `report_type: daily_dashboard` match the field dictionary.
