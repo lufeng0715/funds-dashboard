@@ -88,6 +88,7 @@ def record_etf_snapshots(
                 forward_discount=parsed.forward_discount,
                 shares=parsed.shares,
                 shares_status=parsed.shares_status,
+                missing_reason=parsed.missing_reason,
             )
         )
         count += 1

@@ -109,6 +109,7 @@ def test_wind_to_audit_to_derived_chain_preserves_invalid_status(
     assert row.shares is None
     assert row.shares != 0
     assert row.shares_status == "INVALID"
+    assert row.missing_reason == "invalid_value"  # Linda v3 mapping
     # Other valid fields survive the conversion.
     assert row.fund_size_yuan == 3_000_000.0
     assert row.wind_fetch_audit_id == audit.id
@@ -174,7 +175,10 @@ def test_multi_row_batch_preserves_per_row_status(session: Session) -> None:
     }
     assert by_code["111.SH"].shares == 100.0
     assert by_code["111.SH"].shares_status == "VALID"
+    assert by_code["111.SH"].missing_reason is None
     assert by_code["222.SH"].shares is None
     assert by_code["222.SH"].shares_status == "INVALID"
+    assert by_code["222.SH"].missing_reason == "invalid_value"
     assert by_code["333.SH"].shares is None
     assert by_code["333.SH"].shares_status == "NOT_APPLICABLE"
+    assert by_code["333.SH"].missing_reason == "not_applicable"

@@ -187,6 +187,24 @@ class EtfDailySnapshot(Base):
         ),
         nullable=False,
     )
+    # Linda + Keira msg=33f426b9: distinguish *why* a numeric field is
+    # null so the frontend (ETF page / daily-report) can render a
+    # human-meaningful "缺失原因" rather than collapsing every absence
+    # into a generic "无数据". Enum values match Linda v3 SSOT field
+    # dict §"Allowed missing_reason". NULL when `shares_status="VALID"`.
+    missing_reason: Mapped[str | None] = mapped_column(
+        SAEnum(
+            "invalid_value",
+            "not_returned",
+            "not_applicable",
+            "non_trading_day",
+            "suspended_or_abnormal",
+            "wind_field_uncovered",
+            "parse_error",
+            name="missing_reason_enum",
+        ),
+        nullable=True,
+    )
 
     __table_args__ = (
         # `data_source_version` is part of the unique key so a `--force`

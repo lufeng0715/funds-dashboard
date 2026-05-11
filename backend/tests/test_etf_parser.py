@@ -91,6 +91,7 @@ def test_parse_well_formed_row_yields_full_numeric_snapshot() -> None:
     assert snap.name == "科创50ETF"
     assert snap.shares == 5_000_000.0
     assert snap.shares_status == "VALID"
+    assert snap.missing_reason is None  # VALID rows carry no reason
     assert snap.fund_size_yuan == 6_180_000.0
     assert snap.nav == 1.236
     assert snap.cumulative_nav == 1.245
@@ -134,6 +135,7 @@ def test_invalid_shares_does_not_coerce_to_zero() -> None:
     )
     assert snap.shares != 0, "explicit guard against the 0-coercion bug"
     assert snap.shares_status == "INVALID"
+    assert snap.missing_reason == "invalid_value"  # Linda v3 mapping
     assert snap.fund_size_yuan == 3_000_000.0  # other fields unaffected
 
 
@@ -164,6 +166,7 @@ def test_missing_shares_column_marks_status_missing() -> None:
     snap = parsed[0]
     assert snap.shares is None
     assert snap.shares_status == "MISSING"
+    assert snap.missing_reason == "not_returned"  # Linda v3 mapping
 
 
 def test_none_shares_value_marks_status_missing() -> None:
@@ -177,6 +180,7 @@ def test_none_shares_value_marks_status_missing() -> None:
     snap = parsed[0]
     assert snap.shares is None
     assert snap.shares_status == "MISSING"
+    assert snap.missing_reason == "not_returned"
 
 
 def test_not_applicable_marker_propagates() -> None:
@@ -204,6 +208,7 @@ def test_not_applicable_marker_propagates() -> None:
     snap = parsed[0]
     assert snap.shares is None
     assert snap.shares_status == "NOT_APPLICABLE"
+    assert snap.missing_reason == "not_applicable"  # Linda v3 mapping
     assert snap.nav is None  # also marked
 
 
@@ -234,6 +239,7 @@ def test_numeric_zero_stays_zero_and_status_valid() -> None:
     assert snap.change_range == 0.0
     assert snap.shares == 1_000_000.0
     assert snap.shares_status == "VALID"
+    assert snap.missing_reason is None  # 0.0 is a real value, not missing
 
 
 def test_numeric_string_parses_to_float() -> None:

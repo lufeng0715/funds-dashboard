@@ -41,6 +41,26 @@ _SHARES_COLUMN = "SHARES"
 
 
 SharesStatus = Literal["VALID", "INVALID", "MISSING", "NOT_APPLICABLE"]
+MissingReason = Literal[
+    "invalid_value",
+    "not_returned",
+    "not_applicable",
+    "non_trading_day",
+    "suspended_or_abnormal",
+    "wind_field_uncovered",
+    "parse_error",
+]
+
+# Mapping locked by Linda msg=5520b860 — see field dictionary v3.
+# `VALID` rows have `missing_reason=None`; everything else carries a
+# distinct reason code so the frontend can render a faithful "why is
+# this number missing" instead of a generic "no data".
+_REASON_FOR_STATUS: dict[SharesStatus, MissingReason | None] = {
+    "VALID": None,
+    "INVALID": "invalid_value",
+    "MISSING": "not_returned",
+    "NOT_APPLICABLE": "not_applicable",
+}
 
 
 @dataclass(frozen=True)
@@ -77,6 +97,7 @@ class ParsedEtfSnapshot:
     forward_discount: float | None
     shares: float | None
     shares_status: SharesStatus
+    missing_reason: MissingReason | None
 
 
 # --- internal helpers ------------------------------------------------------
@@ -210,6 +231,7 @@ def parse_etf_snapshot_rows(payload: EtfSnapshotInput) -> list[ParsedEtfSnapshot
                 forward_discount=numeric("FORWARDDISCOUNT"),
                 shares=shares_value,
                 shares_status=shares_status,
+                missing_reason=_REASON_FOR_STATUS[shares_status],
             )
         )
     return parsed
