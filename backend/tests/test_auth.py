@@ -113,7 +113,9 @@ def test_session_tampered_token_rejected(settings: Settings) -> None:
 
     response = Response()
     token = issue_session_cookie(response, settings, username="admin")
-    tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+    head, sig = token.rsplit(".", 1)
+    tampered_sig = ("A" if sig[0] != "A" else "B") + sig[1:]
+    tampered = f"{head}.{tampered_sig}"
     assert parse_session_cookie(tampered, settings) is None
 
 

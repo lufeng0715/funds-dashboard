@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
 
 from funds_dashboard.config import Settings
 from funds_dashboard.main import StartupConfigError, create_app

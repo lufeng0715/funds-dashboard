@@ -12,8 +12,6 @@ Pin every property the secret store relies on:
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from funds_dashboard.config_store import crypto
