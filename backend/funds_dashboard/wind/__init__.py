@@ -95,20 +95,37 @@ class WindClient:
         node_path: str,
         cli_script: str,
         timeout_s: float = 60.0,
+        api_key: str | None = None,
     ):
         self._node_path = node_path
         self._cli_script = cli_script
         self._timeout_s = timeout_s
+        self._api_key = api_key
 
     def call(self, tool_name: str, payload: dict[str, Any]) -> WindResult:
         """Invoke `<node> <cli_script> call <tool> <payload-json>`.
+
+        The API key (when set) is passed via the subprocess's
+        environment, **not** argv — argv on Unix is visible to other
+        processes on the host through `ps aux` / `/proc/<pid>/cmdline`,
+        whereas `/proc/<pid>/environ` is restricted to the same user
+        (Nova msg=138a79cc, OWASP "secret in argv" anti-pattern).
 
         Returns parsed `WindResult` on success. Raises `WindError` on
         non-zero exit, malformed JSON, or an `error` field inside the
         inner JSON body.
         """
+        import os
+
         payload_json = json.dumps(payload, ensure_ascii=False)
         argv = [self._node_path, self._cli_script, "call", tool_name, payload_json]
+
+        # Build env: inherit ours, layer the (sensitive) key on top so
+        # the Wind CLI can pick it up without it crossing argv.
+        env = dict(os.environ)
+        if self._api_key:
+            env["WIND_API_KEY"] = self._api_key
+
         LOG.info("wind call: %s payload=%s", tool_name, payload_json)
         try:
             proc = subprocess.run(
@@ -117,6 +134,7 @@ class WindClient:
                 text=True,
                 timeout=self._timeout_s,
                 check=False,
+                env=env,
             )
         except subprocess.TimeoutExpired as exc:
             raise WindError(

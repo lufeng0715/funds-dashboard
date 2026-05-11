@@ -271,6 +271,101 @@ HAVING version_count > 1;
 
 ---
 
+## 11. Wind CLI Subprocess — Key Must Not Be in argv
+
+**Purpose**: API keys passed as command-line arguments are visible via `ps aux` and `/proc/<pid>/cmdline` to other users on the same machine. This is a CRITICAL security anti-pattern.
+
+**Correct approach**: Pass key as subprocess environment variable, not as argv argument:
+
+```python
+# WRONG — visible in ps aux
+subprocess.run(["node", cli_script, "call", tool_name, "--key", api_key, ...])
+
+# CORRECT — env var only, not in argv
+subprocess.run(
+    ["node", cli_script, "call", tool_name, payload_json],
+    env={**os.environ, "WIND_API_KEY": api_key},  # key only in subprocess env
+    capture_output=True,
+    text=True,
+)
+```
+
+**Test** (add to `tests/test_secrets_redaction.py`):
+
+```python
+import re
+from unittest.mock import patch, MagicMock
+
+
+def test_wind_cli_not_invoked_with_key_in_argv(mock_wind_client):
+    """CRITICAL: API key MUST NOT appear as a subprocess argv argument.
+    
+    argv is visible to all users on the box via `ps aux` /
+    `/proc/<pid>/cmdline`. Use env var passthrough instead.
+    """
+    KEY_PATTERN = re.compile(r'^ak_[a-zA-Z0-9_\-]+$')
+    captured_calls = []
+
+    original_run = __import__('subprocess').run
+    def capturing_run(args, **kwargs):
+        captured_calls.append(args)
+        return MagicMock(returncode=0, stdout='{"ok":true,"content":[{"type":"text","text":"{}"}]}', stderr='')
+
+    with patch('subprocess.run', side_effect=capturing_run):
+        from funds_dashboard.wind import WindClient
+        client = WindClient(node_path="node", cli_script="/fake/cli.mjs")
+        try:
+            client.call("fund_data:get_fund_price_indicators", {"query": "test"})
+        except Exception:
+            pass  # We only care about how it was called
+
+    for call_args in captured_calls:
+        for arg in call_args:
+            assert not KEY_PATTERN.match(str(arg)), (
+                f"CRITICAL SECURITY: API key found in subprocess argv: {arg!r}. "
+                "Use env var passthrough instead of argv to avoid ps-aux leakage."
+            )
+```
+
+**Severity**: CRITICAL — same level as §1 (INVALID→0 coercion) and §5 (secrets in DB). Leakage via argv exposes key to all same-user processes and container-escaped processes.
+
+---
+
+## 12. Bootstrap Fail-Closed on Missing Master Key  
+
+**Purpose**: If `FUNDS_DASHBOARD_MASTER_KEY` is absent, the backend must refuse to start — not start silently without encryption.
+
+**Test**:
+
+```python
+# tests/test_startup_validation.py
+import subprocess
+import sys
+import os
+
+
+def test_startup_fails_without_master_key():
+    """CRITICAL: missing FUNDS_DASHBOARD_MASTER_KEY must cause non-zero exit."""
+    env = {k: v for k, v in os.environ.items() if k != "FUNDS_DASHBOARD_MASTER_KEY"}
+    result = subprocess.run(
+        [sys.executable, "-m", "funds_dashboard.main", "--check-only"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0, (
+        "SECURITY: backend started without FUNDS_DASHBOARD_MASTER_KEY — "
+        "this means secrets will not be encrypted. Must fail-closed."
+    )
+    assert "FUNDS_DASHBOARD_MASTER_KEY" in (result.stderr + result.stdout), (
+        "Error message should mention the missing key, not just crash silently."
+    )
+```
+
+**CI integration**: Run this test with the master key env var deliberately unset.
+
+---
+
 ## Running These Checks
 
 ### SQL (SQLite/Postgres):
