@@ -308,7 +308,14 @@ class DailyReportProvenance(Base):
         primary_key=True,
         autoincrement=True,
     )
-    report_date: Mapped[date] = mapped_column(Date, nullable=False, unique=True)
+    # `unique=True` enforces "one trade date → one current daily-report"
+    # (Linda msg=9589ed01 ruling). The scheduler UPSERTs this row on
+    # `--force` reruns — `data_source_versions` / `markdown_path` /
+    # `generated_at` update in place, never duplicates a row. Indexed
+    # for the dashboard's "show today's report" lookup.
+    report_date: Mapped[date] = mapped_column(
+        Date, nullable=False, unique=True, index=True
+    )
     markdown_path: Mapped[str] = mapped_column(String(255), nullable=False)
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

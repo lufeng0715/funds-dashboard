@@ -142,12 +142,27 @@ def test_run_daily_fetch_happy_path_writes_rows_and_markdown(settings, tmp_path)
         for a in audits:
             assert a.derived_record_count == 1
 
-    # Markdown content
+    # Markdown content. Inspect the actual data rows (skip header
+    # + separator + closing legend) rather than splitting the entire
+    # document — Vera msg=3d6bc478 LOW caught the previous heuristic
+    # was checking a header cell, not a value cell.
     text = result.markdown_path.read_text(encoding="utf-8")
     assert "report_type: daily_dashboard" in text
     assert "510300.SH" in text
     assert "510500.SH" in text
-    assert "—" not in text.split("|")[3]  # no missing-data sentinel in valid row col
+    data_lines = [
+        line for line in text.splitlines()
+        if line.startswith("| 510") or line.startswith("| 588")
+    ]
+    assert len(data_lines) == 3
+    for data_line in data_lines:
+        cells = [cell.strip() for cell in data_line.split("|")[1:-1]]
+        # cells = [windcode, name, fund_size, shares_status, missing_reason]
+        assert cells[2] != "—", (
+            f"valid happy-path row leaked the missing-data sentinel: {data_line!r}"
+        )
+        assert cells[3] == "VALID"
+        assert cells[4] == "—"  # VALID rows have no reason
 
 
 def test_run_daily_fetch_handles_invalid_shares_real_wind_shape(settings) -> None:
@@ -255,3 +270,49 @@ def test_run_daily_fetch_prefers_encrypted_secret_over_env(settings) -> None:
     # The env-supplied `ak_runner_test_KEY_12345` (from _make_settings)
     # was NOT used — encrypted store wins.
     assert "ak_runner_test_KEY_12345" not in captured_keys
+
+
+def test_force_rerun_upserts_daily_report_provenance(settings) -> None:
+    """Linda msg=9589ed01 ruling: `--force` reruns UPDATE the
+    existing `DailyReportProvenance` row, never duplicate.
+    One trade date → one current daily-report.
+
+    Vera msg=3d6bc478 MEDIUM caught this — the first version of the
+    runner blew up with `UNIQUE constraint failed` on the second
+    fetch. This test pins the UPSERT contract so a future refactor
+    that reverts to `session.add(DailyReportProvenance(...))` fails
+    immediately.
+    """
+
+    def _fake_call(self, tool_name, payload):
+        return _wind_result(payload["codes"][0])
+
+    with patch("funds_dashboard.scheduler.runner.WindClient.call", _fake_call):
+        first = run_daily_fetch(settings, trade_date=_REPORT_TRADE_DATE)
+        second = run_daily_fetch(
+            settings, trade_date=_REPORT_TRADE_DATE, force=True
+        )
+
+    # Both runs succeed.
+    assert first.audit_rows == 3
+    assert second.audit_rows == 3
+    # And produce distinct version tokens (different seq).
+    assert first.data_source_version != second.data_source_version
+
+    from funds_dashboard.db.models import DailyReportProvenance
+
+    with session_scope() as session:
+        rows = session.scalars(select(DailyReportProvenance)).all()
+        assert len(rows) == 1, (
+            f"force rerun must UPSERT — found {len(rows)} provenance "
+            f"rows for trade_date={_REPORT_TRADE_DATE}"
+        )
+        only = rows[0]
+        # `data_source_versions` is the audit-trail accumulator —
+        # both run tokens must be present, joined by `,`.
+        assert first.data_source_version in only.data_source_versions
+        assert second.data_source_version in only.data_source_versions
+        # And the row points at the latest markdown.
+        assert str(second.markdown_path).endswith(only.markdown_path) or (
+            only.markdown_path in str(second.markdown_path)
+        )
