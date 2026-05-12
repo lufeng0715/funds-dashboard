@@ -223,8 +223,8 @@ def test_run_daily_fetch_partial_failure_size_only(settings) -> None:
     # All 3 ETFs land — none are "failed" since NAV came through
     assert result.failed_windcodes == []
     assert result.derived_rows == 3
-    # 6 quote calls + 2 successful size calls = 5 audit rows (510500
-    # size call failed, no audit row produced).
+    # 3 quote calls (all succeeded) + 2 successful size calls = 5 audit
+    # rows (510500's size call failed → no audit row produced for it).
     assert result.audit_rows == 5
 
     with session_scope() as session:

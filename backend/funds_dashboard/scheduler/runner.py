@@ -183,6 +183,14 @@ def _safe_wind_call(
     return result, audit
 
 
+# Sentinel tool_name used by `_empty_wind_result`. Extracted to a
+# module-level constant per Vera msg=a8232116 LOW so any future
+# audit-trail scan (e.g. dashboards filtering by tool) sees the same
+# marker string everywhere rather than a string literal scattered
+# through code.
+_SYNTHETIC_EMPTY_TOOL_NAME = "<synthetic-empty>"
+
+
 def _empty_wind_result(windcode: str):
     """Sentinel `WindResult` for the case where one of the two-call
     flow tools failed but the other succeeded.
@@ -195,7 +203,7 @@ def _empty_wind_result(windcode: str):
     from ..wind import WindResult
 
     return WindResult(
-        tool_name="<synthetic-empty>",
+        tool_name=_SYNTHETIC_EMPTY_TOOL_NAME,
         request_payload={"windcode": windcode},
         columns=[],
         rows=[],
