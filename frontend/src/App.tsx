@@ -1040,9 +1040,18 @@ function StatusMetric({ label, value }: { label: string; value: string }) {
 
 // Read-only ETF snapshot table — shown at the top of the page so the
 // first thing feng-lu / Linda / ops see is "did today's fetch land?"
+//
 // Renders missing-data cells as "—" with the explicit reason in a
 // dedicated column, per Linda's no-coerce-to-0 rule (msg=91b45123)
 // extended to the UI surface.
+//
+// Data-source provenance (Linda msg=ffd2ae14):
+//   - trade_date AND data_source_version surfaced prominently so the
+//     viewer always knows "which day, which run"
+//   - data_source_version's `#demo` suffix is treated as a marker: if
+//     EVERY row's version ends with `#demo`, the panel renders a
+//     降级 banner so the viewer doesn't mistake NL-fallback data for
+//     full structured Wind data
 function EtfSnapshotsPanel({
   data,
   error,
@@ -1053,26 +1062,50 @@ function EtfSnapshotsPanel({
   onRefresh: () => void
 }) {
   const rowCount = data?.rows.length ?? 0
+  // Demo-mode marker: when the runner falls back to analytics_data NL
+  // (because `get_fund_price_indicators` is down on the Wind backend)
+  // the demo script tags `data_source_version` with `#demo`. If EVERY
+  // version visible in this response ends with `#demo`, the panel
+  // surfaces a 降级 banner. Mixed versions → no banner (some rows
+  // came from the proper fund_data path).
+  const allDemo =
+    rowCount > 0 &&
+    (data?.data_source_versions ?? []).every((v) => v.endsWith('#demo'))
   return (
     <section className="etf-snapshots-panel">
       <header className="panel-header">
         <h2>今日 ETF 规模快照</h2>
         <div className="panel-meta">
-          {data ? (
-            <>
-              <span>交易日：{data.trade_date}</span>
-              {data.data_source_versions.length > 0 ? (
-                <span title={data.data_source_versions.join(', ')}>
-                  数据源版本：{data.data_source_versions.length} 个
-                </span>
-              ) : null}
-            </>
-          ) : null}
           <button type="button" onClick={onRefresh}>
             刷新
           </button>
         </div>
       </header>
+
+      {data ? (
+        <div className="snapshot-provenance" aria-label="数据来源">
+          <span>
+            <strong>交易日：</strong>
+            {data.trade_date}
+          </span>
+          {data.data_source_versions.length > 0 ? (
+            <span title="完整 data_source_version 列表（Wind audit token）">
+              <strong>数据源版本：</strong>
+              {data.data_source_versions.join('  ·  ')}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {allDemo ? (
+        <div className="notice demo-banner" role="status">
+          ⚠️ <strong>降级数据</strong> — 本批数据来自 <code>analytics_data:get_financial_data</code>{' '}
+          NL 兜底查询（Wind 后端 <code>get_fund_price_indicators</code> 暂不可用）。基金规模可读，
+          但净值 / 份额 / 折溢价等结构化行情字段未返回，按 <code>MISSING/not_returned</code> 标注，
+          <strong>不要</strong>当作完整结构化 Wind 行情解读。
+        </div>
+      ) : null}
+
       {error ? <div className="notice failed">{error}</div> : null}
       {rowCount === 0 ? (
         <p className="empty-state">
@@ -1090,6 +1123,7 @@ function EtfSnapshotsPanel({
               <th>份额状态</th>
               <th>缺失原因</th>
               <th>净值</th>
+              <th>数据源版本</th>
             </tr>
           </thead>
           <tbody>
@@ -1110,6 +1144,9 @@ function EtfSnapshotsPanel({
                 </td>
                 <td>{r.missing_reason ?? '—'}</td>
                 <td>{r.nav !== null ? r.nav.toFixed(4) : '—'}</td>
+                <td className="dsv-cell" title={r.data_source_version}>
+                  {r.data_source_version}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -1119,6 +1156,8 @@ function EtfSnapshotsPanel({
         缺失原因映射：<code>invalid_value</code> Wind 返回无效值；
         <code>not_returned</code> 字段未返回；
         <code>not_applicable</code> 标的不适用。数值列为 — 表示无效或未返回 — <strong>不是 0</strong>。
+        每行 <code>data_source_version</code> 是该行所属 Wind fetch 的审计 token（格式
+        <code>YYYYMMDD#YYYYMMDDThhmmssZ#seq</code>），用于追溯到 <code>wind_fetch_audit</code> 表。
       </p>
     </section>
   )
