@@ -501,7 +501,7 @@ function App() {
     } catch {
       setWindTest({
         status: '测试失败',
-        message: '检查 key 或点击替换',
+        message: 'Wind 连接测试失败，请稍后重试',
         checked_at: new Date().toLocaleString('zh-CN'),
       })
       setSaveState((current) => ({ ...current, test_wind: 'failure' }))
@@ -1154,7 +1154,7 @@ function EtfSnapshotsPanel({
       ) : null}
 
       {error ? <div className="notice failed">{error}</div> : null}
-      {rowCount === 0 ? (
+      {!error && rowCount === 0 ? (
         <p className="empty-state">
           {!isAuthenticated
             ? '请先登录后查看 ETF 快照。'
