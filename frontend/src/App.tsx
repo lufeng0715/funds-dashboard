@@ -44,6 +44,31 @@ type SchedulerForm = {
   markdown_output_dir: string
 }
 
+// Snapshot rows returned by GET /api/v1/etf/snapshots. Distinct from
+// `EtfRow` below — that's the editable pool config; this is read-only
+// daily-fetch output.
+type EtfSnapshot = {
+  windcode: string
+  name: string | null
+  trade_date: string
+  fund_size_yuan: number | null
+  nav: number | null
+  cumulative_nav: number | null
+  change_range: number | null
+  iopv: number | null
+  forward_discount: number | null
+  shares: number | null
+  shares_status: 'VALID' | 'INVALID' | 'MISSING' | 'NOT_APPLICABLE'
+  missing_reason: string | null
+  data_source_version: string
+}
+
+type SnapshotsResponse = {
+  trade_date: string
+  rows: EtfSnapshot[]
+  data_source_versions: string[]
+}
+
 type EtfRow = {
   windcode: string
   display_name: string
@@ -284,6 +309,10 @@ function App() {
   const [saveState, setSaveState] = useState<Record<string, SaveState>>({})
   const [authError, setAuthError] = useState('')
   const [loadError, setLoadError] = useState('')
+  // ETF snapshots — the "运行我看看" surface. Loaded after auth alongside
+  // config so the dashboard's first paint shows real data when present.
+  const [snapshots, setSnapshots] = useState<SnapshotsResponse | null>(null)
+  const [snapshotsError, setSnapshotsError] = useState('')
 
   const windSecret = status?.secrets.wind_api_key
   const secretStatusText = windSecret?.configured
@@ -325,9 +354,25 @@ function App() {
     }
   }, [])
 
+  // Separate loader so a snapshot fetch failure (e.g. DB empty before
+  // first run) doesn't blow up the config-page paint.
+  const loadSnapshots = useCallback(async () => {
+    setSnapshotsError('')
+    try {
+      const data = await requestJson<SnapshotsResponse>('/etf/snapshots')
+      setSnapshots(data)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '快照加载失败'
+      if (message !== '需要管理员权限') {
+        setSnapshotsError(message)
+      }
+    }
+  }, [])
+
   useEffect(() => {
     void loadConfig()
-  }, [loadConfig])
+    void loadSnapshots()
+  }, [loadConfig, loadSnapshots])
 
   async function saveSection(section: string, values: Record<string, unknown>) {
     setSaveState((current) => ({ ...current, [section]: 'loading' }))
@@ -491,6 +536,15 @@ function App() {
 
       {authError ? <div className="notice blocked">需要管理员权限</div> : null}
       {loadError ? <div className="notice failed">{loadError}</div> : null}
+
+      <EtfSnapshotsPanel
+        data={snapshots}
+        error={snapshotsError}
+        onRefresh={() => {
+          void loadSnapshots()
+        }}
+      />
+
 
       <div className="config-layout">
         <aside className="group-nav" aria-label="配置分组">
@@ -981,6 +1035,131 @@ function StatusMetric({ label, value }: { label: string; value: string }) {
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  )
+}
+
+// Read-only ETF snapshot table — shown at the top of the page so the
+// first thing feng-lu / Linda / ops see is "did today's fetch land?"
+//
+// Renders missing-data cells as "—" with the explicit reason in a
+// dedicated column, per Linda's no-coerce-to-0 rule (msg=91b45123)
+// extended to the UI surface.
+//
+// Data-source provenance (Linda msg=ffd2ae14):
+//   - trade_date AND data_source_version surfaced prominently so the
+//     viewer always knows "which day, which run"
+//   - data_source_version's `#demo` suffix is treated as a marker: if
+//     EVERY row's version ends with `#demo`, the panel renders a
+//     降级 banner so the viewer doesn't mistake NL-fallback data for
+//     full structured Wind data
+function EtfSnapshotsPanel({
+  data,
+  error,
+  onRefresh,
+}: {
+  data: SnapshotsResponse | null
+  error: string
+  onRefresh: () => void
+}) {
+  const rowCount = data?.rows.length ?? 0
+  // Demo-mode marker: when the runner falls back to analytics_data NL
+  // (because `get_fund_price_indicators` is down on the Wind backend)
+  // the demo script tags `data_source_version` with `#demo`. If EVERY
+  // version visible in this response ends with `#demo`, the panel
+  // surfaces a 降级 banner. Mixed versions → no banner (some rows
+  // came from the proper fund_data path).
+  const allDemo =
+    rowCount > 0 &&
+    (data?.data_source_versions ?? []).every((v) => v.endsWith('#demo'))
+  return (
+    <section className="etf-snapshots-panel">
+      <header className="panel-header">
+        <h2>今日 ETF 规模快照</h2>
+        <div className="panel-meta">
+          <button type="button" onClick={onRefresh}>
+            刷新
+          </button>
+        </div>
+      </header>
+
+      {data ? (
+        <div className="snapshot-provenance" aria-label="数据来源">
+          <span>
+            <strong>交易日：</strong>
+            {data.trade_date}
+          </span>
+          {data.data_source_versions.length > 0 ? (
+            <span title="完整 data_source_version 列表（Wind audit token）">
+              <strong>数据源版本：</strong>
+              {data.data_source_versions.join('  ·  ')}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {allDemo ? (
+        <div className="notice demo-banner" role="status">
+          ⚠️ <strong>降级数据</strong> — 本批数据来自 <code>analytics_data:get_financial_data</code>{' '}
+          NL 兜底查询（Wind 后端 <code>get_fund_price_indicators</code> 暂不可用）。基金规模可读，
+          但净值 / 份额 / 折溢价等结构化行情字段未返回，按 <code>MISSING/not_returned</code> 标注，
+          <strong>不要</strong>当作完整结构化 Wind 行情解读。
+        </div>
+      ) : null}
+
+      {error ? <div className="notice failed">{error}</div> : null}
+      {rowCount === 0 ? (
+        <p className="empty-state">
+          当前交易日还没有数据。运行 <code>funds-dashboard-fetch --trade-date YYYY-MM-DD --force</code>{' '}
+          后再刷新本页面。
+        </p>
+      ) : (
+        <table className="etf-snapshot-table">
+          <thead>
+            <tr>
+              <th>windcode</th>
+              <th>简称</th>
+              <th>基金规模 (亿元)</th>
+              <th>份额 (份)</th>
+              <th>份额状态</th>
+              <th>缺失原因</th>
+              <th>净值</th>
+              <th>数据源版本</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data!.rows.map((r) => (
+              <tr key={`${r.windcode}-${r.data_source_version}`}>
+                <td>{r.windcode}</td>
+                <td>{r.name ?? '—'}</td>
+                <td>
+                  {r.fund_size_yuan !== null
+                    ? (r.fund_size_yuan / 1e8).toFixed(2)
+                    : '—'}
+                </td>
+                <td>{r.shares !== null ? r.shares.toLocaleString() : '—'}</td>
+                <td>
+                  <span className={`status-pill status-${r.shares_status.toLowerCase()}`}>
+                    {r.shares_status}
+                  </span>
+                </td>
+                <td>{r.missing_reason ?? '—'}</td>
+                <td>{r.nav !== null ? r.nav.toFixed(4) : '—'}</td>
+                <td className="dsv-cell" title={r.data_source_version}>
+                  {r.data_source_version}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <p className="panel-note">
+        缺失原因映射：<code>invalid_value</code> Wind 返回无效值；
+        <code>not_returned</code> 字段未返回；
+        <code>not_applicable</code> 标的不适用。数值列为 — 表示无效或未返回 — <strong>不是 0</strong>。
+        每行 <code>data_source_version</code> 是该行所属 Wind fetch 的审计 token（格式
+        <code>YYYYMMDD#YYYYMMDDThhmmssZ#seq</code>），用于追溯到 <code>wind_fetch_audit</code> 表。
+      </p>
+    </section>
   )
 }
 
