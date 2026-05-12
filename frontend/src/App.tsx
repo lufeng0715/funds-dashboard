@@ -1090,9 +1090,11 @@ function StatusMetric({ label, value }: { label: string; value: string }) {
 // dedicated column, per Linda's no-coerce-to-0 rule (msg=91b45123)
 // extended to the UI surface.
 //
-// Data-source provenance (Linda msg=ffd2ae14):
+// Data-source provenance (Linda msg=ffd2ae14 + task #24):
 //   - trade_date AND data_source_version surfaced prominently so the
 //     viewer always knows "which day, which run"
+//   - API rows are already latest-per-ETF for the main table; the
+//     full version list remains visible for audit/history
 //   - data_source_version's `#demo` suffix is treated as a marker: if
 //     EVERY row's version ends with `#demo`, the panel renders a
 //     降级 banner so the viewer doesn't mistake NL-fallback data for
@@ -1148,7 +1150,7 @@ function EtfSnapshotsPanel({
         <div className="notice demo-banner" role="status">
           ⚠️ <strong>降级数据</strong> — 本批数据来自 <code>analytics_data:get_financial_data</code>{' '}
           NL 兜底查询（Wind 后端 <code>get_fund_price_indicators</code> 暂不可用）。基金规模可读，
-          但净值 / 份额 / 折溢价等结构化行情字段未返回，按 <code>MISSING/not_returned</code> 标注，
+          但份额 / IOPV / 折溢价等结构化行情字段未返回，按 <code>MISSING/not_returned</code> 标注，
           <strong>不要</strong>当作完整结构化 Wind 行情解读。
         </div>
       ) : null}
@@ -1170,7 +1172,7 @@ function EtfSnapshotsPanel({
               <th>份额 (份)</th>
               <th>份额状态</th>
               <th>缺失原因</th>
-              <th>净值</th>
+              <th title="来源：fund_data:get_fund_quote MATCH">ETF交易价（MATCH）</th>
               <th>数据源版本</th>
             </tr>
           </thead>
@@ -1200,6 +1202,11 @@ function EtfSnapshotsPanel({
           </tbody>
         </table>
       )}
+      <p className="panel-note">
+        主表仅展示每只 ETF 的最新数据版本；完整 <code>data_source_version</code> 列表保留用于审计追溯。
+        ETF交易价来自 <code>fund_data:get_fund_quote</code> 的 <code>MATCH</code>，是日间交易价/市价代理；
+        ETF交易价与基金净值/IOPV可能存在折溢价，二者不是同一口径。
+      </p>
       <p className="panel-note">
         缺失原因映射：<code>invalid_value</code> Wind 返回无效值；
         <code>not_returned</code> 字段未返回；
