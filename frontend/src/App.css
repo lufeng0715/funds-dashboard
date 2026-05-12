@@ -366,6 +366,23 @@ td input {
   }
 }
 
+/* Login panel — shown when the API returns 401 before any auth cookie is set. */
+.login-panel {
+  margin: 24px 28px;
+  max-width: 360px;
+  background: #fff;
+  border: 1px solid #d9dee5;
+  border-radius: 8px;
+  padding: 24px;
+}
+.login-panel h2 {
+  margin: 0 0 16px;
+  font-size: 18px;
+}
+.login-panel .form-grid {
+  grid-template-columns: 1fr;
+}
+
 /* ETF Snapshot panel — read-only daily-fetch surface. */
 .etf-snapshots-panel {
   margin: 1.5rem 0 2rem;
