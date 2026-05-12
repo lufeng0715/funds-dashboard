@@ -57,7 +57,20 @@ class EtfSnapshot(BaseModel):
     name: str | None
     trade_date: date
     fund_size_yuan: float | None
-    nav: float | None = Field(default=None, description="Net asset value (元)")
+    # `market_price` (PR e rename from `nav` — Linda hardline #1):
+    # intraday last trade from `fund_data:get_fund_quote` MATCH.
+    # NOT the basis NAV — that's `unit_nav`.
+    market_price: float | None = Field(
+        default=None,
+        description=(
+            "Intraday last trade price (元) — secondary market price, "
+            "NOT the basis NAV. See `unit_nav`."
+        ),
+    )
+    unit_nav: float | None = Field(
+        default=None,
+        description="Basis NAV per share (单位净值，元) from analytics_data.",
+    )
     cumulative_nav: float | None = None
     change_range: float | None = Field(
         default=None, description="Daily change in basis points (%)"
@@ -175,7 +188,8 @@ def list_snapshots(
             name=r.name,
             trade_date=r.trade_date,
             fund_size_yuan=r.fund_size_yuan,
-            nav=r.nav,
+            market_price=r.market_price,
+            unit_nav=r.unit_nav,
             cumulative_nav=r.cumulative_nav,
             change_range=r.change_range,
             iopv=r.iopv,

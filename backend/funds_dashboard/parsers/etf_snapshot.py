@@ -82,6 +82,11 @@ class EtfSnapshotInput:
 class ParsedEtfSnapshot:
     """One derived row, ready for `EtfDailySnapshot.__init__(**asdict)`-style
     persistence. Field names line up with the SQLAlchemy model.
+
+    `market_price` = intraday last trade (was `nav` pre-PR e — Linda
+    msg=ed1d62dc rename so the column name actually matches its
+    semantics). `unit_nav` = basis NAV per share (`最新单位净值` from
+    `analytics_data:get_financial_data`).
     """
 
     wind_fetch_audit_id: int
@@ -90,7 +95,8 @@ class ParsedEtfSnapshot:
     trade_date: str
     name: str | None
     fund_size_yuan: float | None
-    nav: float | None
+    market_price: float | None
+    unit_nav: float | None
     cumulative_nav: float | None
     change_range: float | None
     iopv: float | None
@@ -212,8 +218,33 @@ _ANALYTICS_NAME_COLS: tuple[str, ...] = (
 )
 _ANALYTICS_FUND_SIZE_COLS: tuple[str, ...] = (
     "最新基金规模",
+    "最新规模",
     "基金规模",
+    "基金规模合计",
 )
+# Extended NL question's new columns (real probe shape).
+# `analytics_data` returns one of these aliases depending on NL routing.
+_ANALYTICS_SHARES_COLS: tuple[str, ...] = (
+    "最新总份额",      # 510300 probe
+    "最新份额",        # 510500 / 588200 probe
+    "基金份额_合计",   # alternate NL phrasing
+    "总份额",          # bare-form alternative
+)
+_ANALYTICS_UNIT_NAV_COLS: tuple[str, ...] = (
+    "最新单位净值",    # real probe shape
+    "单位净值",        # bare-form
+)
+_ANALYTICS_IOPV_COLS: tuple[str, ...] = (
+    "最新IOPV",
+    "IOPV",
+)
+# Wind returns 总份额 in 万份 (10000-unit blocks); normalise to raw 份
+# count so consumers (daily-report markdown, dashboard frontend) can
+# scale to 亿份 / 万份 themselves without guessing the source unit.
+_SHARES_WAN_TO_FEN = 10000.0
+# Fund size from `analytics_data` arrives in 亿元; convert to 元 for
+# canonical storage (matches the existing `fund_size_yuan` contract).
+_YI_TO_YUAN = 1e8
 
 
 @dataclass(frozen=True)
@@ -275,40 +306,182 @@ def _first_present_index(
     return None
 
 
-def _extract_analytics_name_and_size(
-    size: WindResult,
-) -> tuple[str | None, float | None]:
-    """Pull `(name, fund_size_yuan)` from a Wind analytics_data response.
+@dataclass(frozen=True)
+class _AnalyticsFields:
+    """Per-windcode fields extracted from one `analytics_data` response.
 
-    The probe shape:
-        columns = ["Wind代码", "基金简称_中文", "最新基金规模"]
-        rows = [["510300.SH", "华泰柏瑞沪深300ETF", 1686.5965]]
-    Fund size is in 亿元 — multiply by 1e8 to normalize to 元 (the
-    canonical unit `EtfDailySnapshot.fund_size_yuan` uses).
+    Grouped so `_extract_analytics_fields` returns a typed bundle the
+    caller can deconstruct cleanly. `shares` carries an explicit
+    `(value, status)` pair — Linda msg=1c413d84 BLOCKER口径: status
+    must be `INVALID` / `MISSING` / `NOT_APPLICABLE` / `VALID`
+    distinguishably, not flattened to "shares is None".
+    """
 
-    Column-name probing uses the fallback lists declared at module
-    top so the parser keeps working when Wind's NL router picks a
-    different header form for the same logical field.
+    name: str | None
+    fund_size_yuan: float | None
+    shares: float | None
+    shares_status: SharesStatus
+    unit_nav: float | None
+    iopv: float | None
+
+
+def _extract_analytics_fields(size: WindResult) -> _AnalyticsFields:
+    """Pull all 5 fund fields from a Wind `analytics_data` response.
+
+    The extended NL question (per feng-lu msg=440b79ea finding) is:
+        "{windcode} 总份额 基金规模 单位净值 实时IOPV 中文简称"
+
+    Probe shapes seen on real Wind:
+        510300: ["Wind代码", "基金简称_中文", "最新总份额", "最新基金规模",
+                 "最新单位净值", "单位净值币种", "证券简称", "最新IOPV", "交易时间"]
+        510500: ["Wind代码", "证券简称", "最新份额", "最新规模",
+                 "最新单位净值", "单位净值币种", "最新IOPV", ...]
+        588200: same shape as 510500.
+
+    Column-name probing uses fallback lists declared at module top
+    so the parser stays robust when Wind's NL router picks alternate
+    header forms. Unit normalisations:
+      - `fund_size_yuan`: yi → 元 (×1e8)
+      - `shares`:         万份 → 份 (×10000)
+      - `unit_nav` / `iopv`: stored as-is (元 per share)
     """
     column_index = {name: i for i, name in enumerate(size.columns)}
     if not size.rows:
-        return None, None
+        # Whole response empty (e.g. analytics_data outage) — every
+        # field is MISSING. Linda口径: still distinguish from
+        # INVALID, so report MISSING here (not INVALID).
+        return _AnalyticsFields(
+            name=None,
+            fund_size_yuan=None,
+            shares=None,
+            shares_status="MISSING",
+            unit_nav=None,
+            iopv=None,
+        )
     row = size.rows[0]
-    name_idx = _first_present_index(column_index, _ANALYTICS_NAME_COLS)
-    size_idx = _first_present_index(column_index, _ANALYTICS_FUND_SIZE_COLS)
-    name: str | None = None
-    if name_idx is not None and name_idx < len(row):
-        raw_name = row[name_idx]
-        if isinstance(raw_name, str) and raw_name.strip():
-            name = raw_name.strip()
-    fund_size_yuan: float | None = None
-    if size_idx is not None and size_idx < len(row):
-        raw_size = row[size_idx]
-        if _classify_marker(raw_size) is None:
-            yi = _coerce_float(raw_size)
-            if yi is not None:
-                fund_size_yuan = yi * 1e8
-    return name, fund_size_yuan
+
+    name = _extract_str_by_candidates(row, column_index, _ANALYTICS_NAME_COLS)
+    fund_size_yuan = _extract_scaled_numeric(
+        row, column_index, _ANALYTICS_FUND_SIZE_COLS, scale=_YI_TO_YUAN,
+    )
+    # Shares uses a status-aware extractor — Linda msg=1c413d84
+    # BLOCKER: INVALID / MISSING / NOT_APPLICABLE must surface as
+    # distinct shares_status values, not collapse to a single
+    # "shares is None" branch.
+    shares, shares_status = _extract_shares_with_status(
+        row, column_index, _ANALYTICS_SHARES_COLS, scale=_SHARES_WAN_TO_FEN,
+    )
+    unit_nav = _extract_scaled_numeric(
+        row, column_index, _ANALYTICS_UNIT_NAV_COLS, scale=1.0,
+    )
+    iopv = _extract_scaled_numeric(
+        row, column_index, _ANALYTICS_IOPV_COLS, scale=1.0,
+    )
+    return _AnalyticsFields(
+        name=name,
+        fund_size_yuan=fund_size_yuan,
+        shares=shares,
+        shares_status=shares_status,
+        unit_nav=unit_nav,
+        iopv=iopv,
+    )
+
+
+def _extract_str_by_candidates(
+    row: list[object],
+    column_index: dict[str, int],
+    candidates: tuple[str, ...],
+) -> str | None:
+    """Trimmed non-empty string from the first matching candidate column."""
+    idx = _first_present_index(column_index, candidates)
+    if idx is None or idx >= len(row):
+        return None
+    raw = row[idx]
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def _extract_scaled_numeric(
+    row: list[object],
+    column_index: dict[str, int],
+    candidates: tuple[str, ...],
+    *,
+    scale: float,
+) -> float | None:
+    """Float × scale from the first matching candidate column.
+
+    Returns None when the column is missing, the cell is a Wind null
+    marker (INVALID/MISSING/N/A), or coercion fails. Markers are NOT
+    coerced to 0 — Linda's no-coerce-to-0 rule (msg=91b45123).
+
+    Use `_extract_shares_with_status` instead when the caller needs
+    to distinguish INVALID from MISSING from NOT_APPLICABLE; this
+    function flattens all three to `None`.
+    """
+    idx = _first_present_index(column_index, candidates)
+    if idx is None or idx >= len(row):
+        return None
+    raw = row[idx]
+    if _classify_marker(raw) is not None:
+        return None
+    numeric = _coerce_float(raw)
+    if numeric is None:
+        return None
+    return numeric * scale
+
+
+def _extract_shares_with_status(
+    row: list[object],
+    column_index: dict[str, int],
+    candidates: tuple[str, ...],
+    *,
+    scale: float,
+) -> tuple[float | None, SharesStatus]:
+    """Status-aware shares extraction (Linda msg=1c413d84 BLOCKER口径).
+
+    Returns `(value, status)` where status is one of:
+
+      - `INVALID`        — Wind cell said `"INVALID"` / `"Invalid"`
+      - `NOT_APPLICABLE` — Wind cell said `"N/A"` / `"NOT_APPLICABLE"`
+      - `MISSING`        — column missing, cell empty, or coerce failed
+      - `VALID`          — numeric cell (including 0.0)
+
+    The value is `None` for every non-VALID status (Linda's
+    no-coerce-to-0 rule extends here: a marker MUST NOT become 0).
+    `0.0` IS a VALID number — a fund with literally 0 shares
+    outstanding is rare but valid, and must round-trip honestly
+    rather than be treated as missing.
+    """
+    idx = _first_present_index(column_index, candidates)
+    if idx is None or idx >= len(row):
+        return None, "MISSING"
+    raw = row[idx]
+    marker = _classify_marker(raw)
+    if marker is not None:
+        # `_classify_marker` returns the status name verbatim
+        return None, marker
+    numeric = _coerce_float(raw)
+    if numeric is None:
+        # Cell present but coerce failed (unexpected type) — surface
+        # as MISSING so the operator can spot it; never silently 0.
+        return None, "MISSING"
+    return numeric * scale, "VALID"
+
+
+# Back-compat wrapper preserved so existing call sites (and any
+# fixture-based tests) that destructure `(name, fund_size_yuan)`
+# keep working. New code should use `_extract_analytics_fields()`.
+def _extract_analytics_name_and_size(
+    size: WindResult,
+) -> tuple[str | None, float | None]:
+    """Two-field subset of `_extract_analytics_fields()`. Deprecated —
+    new code should use the full bundle so shares/IOPV/unit_nav can be
+    surfaced from the same response. Kept as a thin alias until the
+    last callers migrate.
+    """
+    bundle = _extract_analytics_fields(size)
+    return bundle.name, bundle.fund_size_yuan
 
 
 def parse_etf_snapshot_from_multi_tool(
@@ -316,34 +489,51 @@ def parse_etf_snapshot_from_multi_tool(
 ) -> ParsedEtfSnapshot:
     """Merge two Wind responses into one ETF snapshot row.
 
-    Returns exactly one `ParsedEtfSnapshot` (vs the original
-    single-tool parser which returned one-per-Wind-row, because
-    `get_fund_price_indicators` could return multiple windcodes
-    in one call). Here the caller passes one windcode at a time so
-    the output is always a single row.
+    Returns exactly one `ParsedEtfSnapshot` per windcode. The two
+    sources cover complementary fields:
 
-    Unobtainable fields (`shares`, `iopv`, `forward_discount`,
-    `cumulative_nav`, `change_range`) come back as `None` with
-    `missing_reason="not_returned"`. Linda's no-coerce-to-0 rule
-    (msg=91b45123) extends to those: never 0, never fabricated.
+      * `quote_result` (`fund_data:get_fund_quote`): provides
+        `market_price` = MATCH (intraday last trade). Linda hardline
+        #1: this is NOT the basis NAV — that's in `unit_nav`.
+
+      * `size_result` (`analytics_data:get_financial_data`): provides
+        `name` / `fund_size_yuan` / `shares` / `unit_nav` / `iopv`
+        in a single NL call when the question explicitly asks for
+        those fields (`{code} 总份额 基金规模 单位净值 实时IOPV 中文简称` —
+        per feng-lu msg=440b79ea Wind alt-tool finding).
+
+    Unobtainable fields stay `None` with `missing_reason="not_returned"`
+    (Linda msg=91b45123 no-coerce-to-0 rule):
+      - `cumulative_nav` — analytics_data doesn't expose累计净值 today
+      - `change_range`   — needs separate price-history call
+      - `forward_discount` — `get_fund_price_indicators` exclusive
+        (still TOOL_ERROR / schema-incompatible on the Wind backend)
+
+    `shares_status` flips to `VALID` when shares is populated; else
+    stays `MISSING/not_returned`.
     """
-    nav = _extract_last_match_price(payload.quote_result)
-    name, fund_size_yuan = _extract_analytics_name_and_size(payload.size_result)
+    market_price = _extract_last_match_price(payload.quote_result)
+    fields = _extract_analytics_fields(payload.size_result)
+    # Linda msg=1c413d84 BLOCKER口径: shares_status is whatever the
+    # extractor reported (INVALID / MISSING / NOT_APPLICABLE / VALID),
+    # NOT a flat "is None → MISSING" classification. The
+    # `_REASON_FOR_STATUS` map provides the matching missing_reason.
     return ParsedEtfSnapshot(
         wind_fetch_audit_id=payload.quote_audit_id,
         data_source_version=payload.data_source_version,
         windcode=payload.windcode,
         trade_date=payload.trade_date,
-        name=name,
-        fund_size_yuan=fund_size_yuan,
-        nav=nav,
+        name=fields.name,
+        fund_size_yuan=fields.fund_size_yuan,
+        market_price=market_price,
+        unit_nav=fields.unit_nav,
         cumulative_nav=None,
         change_range=None,
-        iopv=None,
+        iopv=fields.iopv,
         forward_discount=None,
-        shares=None,
-        shares_status="MISSING",
-        missing_reason="not_returned",
+        shares=fields.shares,
+        shares_status=fields.shares_status,
+        missing_reason=_REASON_FOR_STATUS[fields.shares_status],
     )
 
 
@@ -417,7 +607,12 @@ def parse_etf_snapshot_rows(payload: EtfSnapshotInput) -> list[ParsedEtfSnapshot
                 trade_date=payload.trade_date,
                 name=name_value(),
                 fund_size_yuan=numeric("FUNDSIZE"),
-                nav=numeric("NETVALUE"),
+                # `MATCH` is the intraday last trade (secondary
+                # market price). Maps to the renamed `market_price`.
+                market_price=numeric("MATCH"),
+                # `NETVALUE` (when present) is the basis unit NAV.
+                # Maps to `unit_nav`.
+                unit_nav=numeric("NETVALUE"),
                 cumulative_nav=numeric("ACCUMULATEDNETVALUE"),
                 change_range=numeric("CHANGERANGE"),
                 iopv=numeric("IOPV"),

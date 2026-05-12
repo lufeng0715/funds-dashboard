@@ -181,15 +181,21 @@ def test_run_daily_fetch_happy_path_writes_rows_and_markdown(settings, tmp_path)
             "588200.SH",
         }
         for snap in snapshots:
-            # name + fund_size from analytics_data, nav from quote
+            # name + fund_size from analytics_data, market_price from quote
             assert snap.name and snap.name.startswith("name-")
             assert snap.fund_size_yuan == 100.0 * 1e8  # 100 亿元 → 元
-            assert snap.nav == 1.234  # last-row MATCH
-            # `shares` family — no tool surfaces this; stays MISSING
+            # MATCH last-row → `market_price` (PR e rename — Linda
+            # hardline #1, this is the intraday quoted price not basis NAV)
+            assert snap.market_price == 1.234
+            # `shares` family — current stub size_result doesn't carry
+            # shares/IOPV/unit_nav columns, so they stay MISSING. The
+            # real Wind probe (test_real_wind_regression) covers the
+            # populated path.
             assert snap.shares is None
             assert snap.shares_status == "MISSING"
             assert snap.missing_reason == "not_returned"
             assert snap.iopv is None
+            assert snap.unit_nav is None
             assert snap.forward_discount is None
         audits = session.scalars(select(WindFetchAudit)).all()
         # 2 tool calls × 3 windcodes = 6 audit rows
@@ -243,7 +249,7 @@ def test_run_daily_fetch_partial_failure_size_only(settings) -> None:
         ).all()
         assert len(rows) == 1
         row = rows[0]
-        assert row.nav == 1.234  # quote landed
+        assert row.market_price == 1.234  # quote landed (PR e rename)
         assert row.fund_size_yuan is None  # size failed → MISSING
         assert row.name is None
 
