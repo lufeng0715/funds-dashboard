@@ -578,6 +578,7 @@ function App() {
       <EtfSnapshotsPanel
         data={snapshots}
         error={snapshotsError}
+        isAuthenticated={!authError}
         onRefresh={() => {
           void loadSnapshots()
         }}
@@ -1093,10 +1094,12 @@ function StatusMetric({ label, value }: { label: string; value: string }) {
 function EtfSnapshotsPanel({
   data,
   error,
+  isAuthenticated,
   onRefresh,
 }: {
   data: SnapshotsResponse | null
   error: string
+  isAuthenticated: boolean
   onRefresh: () => void
 }) {
   const rowCount = data?.rows.length ?? 0
@@ -1147,8 +1150,9 @@ function EtfSnapshotsPanel({
       {error ? <div className="notice failed">{error}</div> : null}
       {rowCount === 0 ? (
         <p className="empty-state">
-          当前交易日还没有数据。运行 <code>funds-dashboard-fetch --trade-date YYYY-MM-DD --force</code>{' '}
-          后再刷新本页面。
+          {!isAuthenticated
+            ? '请先登录后查看 ETF 快照。'
+            : <>当前交易日还没有数据。运行 <code>funds-dashboard-fetch --trade-date YYYY-MM-DD --force</code>{' '}后再刷新本页面。</>}
         </p>
       ) : (
         <table className="etf-snapshot-table">
