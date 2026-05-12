@@ -83,6 +83,36 @@ class ProvenanceResponse(BaseModel):
     generated_at: str
 
 
+def _version_sort_key(version: str) -> tuple[int, str, int, str]:
+    """Sort data_source_version tokens by effective dashboard freshness.
+
+    Real runner versions always outrank demo placeholders. Within the
+    same kind, use the embedded timestamp and sequence when present,
+    with the raw token as a stable final tiebreaker.
+    """
+    parts = version.split("#")
+    timestamp = parts[1] if len(parts) > 1 else ""
+    suffix = parts[2] if len(parts) > 2 else ""
+    is_demo = suffix == "demo" or version.endswith("#demo")
+    try:
+        sequence = int(suffix)
+    except ValueError:
+        sequence = -1
+    return (0 if is_demo else 1, timestamp, sequence, version)
+
+
+def _latest_snapshot_rows(rows: list[EtfDailySnapshot]) -> list[EtfDailySnapshot]:
+    """Pick one main-table row per ETF while preserving audit versions elsewhere."""
+    latest_by_windcode: dict[str, EtfDailySnapshot] = {}
+    for row in rows:
+        existing = latest_by_windcode.get(row.windcode)
+        if existing is None or _version_sort_key(row.data_source_version) > _version_sort_key(
+            existing.data_source_version
+        ):
+            latest_by_windcode[row.windcode] = row
+    return [latest_by_windcode[windcode] for windcode in sorted(latest_by_windcode)]
+
+
 def _latest_trade_date(session: Session) -> date | None:
     """Most recent date that has at least one ETF snapshot.
 
@@ -113,13 +143,13 @@ def list_snapshots(
     _admin: SessionPayload = Depends(require_authenticated_admin),
     session: Session = Depends(get_db_session),
 ) -> SnapshotsResponse:
-    """Return all ETF snapshots for `trade_date` (default: latest).
+    """Return ETF snapshots for `trade_date` (default: latest).
 
     If multiple fetches landed for the same `trade_date` (a `--force`
     rerun produces a second `data_source_version`), this endpoint
-    returns rows from EVERY version — the response's
-    `data_source_versions` array makes the duplication explicit so
-    the UI can pick one or surface both.
+    returns only the latest effective row per ETF for the main table.
+    The response's `data_source_versions` array still carries EVERY
+    version for provenance/history.
     """
     target = trade_date or _latest_trade_date(session)
     if target is None:
@@ -155,9 +185,9 @@ def list_snapshots(
             missing_reason=r.missing_reason,
             data_source_version=r.data_source_version,
         )
-        for r in db_rows
+        for r in _latest_snapshot_rows(db_rows)
     ]
-    versions = sorted({r.data_source_version for r in db_rows})
+    versions = sorted({r.data_source_version for r in db_rows}, key=_version_sort_key)
 
     return SnapshotsResponse(
         trade_date=target, rows=rows, data_source_versions=versions

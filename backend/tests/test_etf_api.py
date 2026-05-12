@@ -224,11 +224,11 @@ def test_snapshots_preserves_missing_status_verbatim(tmp_path) -> None:
     assert row["missing_reason"] == "not_returned"
 
 
-def test_snapshots_force_rerun_returns_all_versions(tmp_path) -> None:
+def test_snapshots_force_rerun_returns_latest_row_per_windcode(tmp_path) -> None:
     """`--force` rerun creates a second `data_source_version` for the
-    same `(windcode, trade_date)` triple. The endpoint returns BOTH
-    rows; `data_source_versions` array surfaces the duplication so
-    the UI can choose to dedupe or show both."""
+    same `(windcode, trade_date)` triple. The dashboard main table must
+    show only the latest effective row per ETF while retaining all
+    versions in `data_source_versions` for audit/provenance."""
     settings = _settings(tmp_path)
     client = _client(settings)
     with _session_for(settings) as session:
@@ -248,11 +248,51 @@ def test_snapshots_force_rerun_returns_all_versions(tmp_path) -> None:
     _login(client)
     resp = client.get("/api/v1/etf/snapshots?trade_date=2026-05-11")
     body = resp.json()
-    assert len(body["rows"]) == 2
+    assert len(body["rows"]) == 1
+    assert body["rows"][0]["data_source_version"] == "20260511#xxx#2"
+    assert body["rows"][0]["shares"] == 1_000_002.0
     assert set(body["data_source_versions"]) == {
         "20260511#xxx#1",
         "20260511#xxx#2",
     }
+
+
+def test_snapshots_real_versions_outrank_demo_rows(tmp_path) -> None:
+    """Demo rows are historical placeholders. If a real fetch exists
+    for the same ETF/date, the main table must choose the real row even
+    when the demo row's timestamp sorts later lexicographically."""
+    settings = _settings(tmp_path)
+    client = _client(settings)
+    with _session_for(settings) as session:
+        _seed_snapshot(
+            session,
+            windcode="510300.SH",
+            trade_date=date(2026, 5, 11),
+            name="demo",
+            fund_size_yuan=1.0e11,
+            shares=None,
+            shares_status="MISSING",
+            missing_reason="not_returned",
+            data_source_version="20260511#20260512T235959Z#demo",
+        )
+        _seed_snapshot(
+            session,
+            windcode="510300.SH",
+            trade_date=date(2026, 5, 11),
+            name="real",
+            fund_size_yuan=1.1e11,
+            shares=None,
+            shares_status="MISSING",
+            missing_reason="not_returned",
+            data_source_version="20260511#20260512T010000Z#2",
+        )
+        session.commit()
+    _login(client)
+    resp = client.get("/api/v1/etf/snapshots?trade_date=2026-05-11")
+    body = resp.json()
+    assert len(body["rows"]) == 1
+    assert body["rows"][0]["name"] == "real"
+    assert body["rows"][0]["data_source_version"] == "20260511#20260512T010000Z#2"
 
 
 def test_provenance_returns_404_when_missing(tmp_path) -> None:

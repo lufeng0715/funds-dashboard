@@ -178,6 +178,31 @@ describe('config page', () => {
     ).toBeInTheDocument()
   })
 
+  it('labels MATCH as ETF trading price and keeps provenance visible', async () => {
+    render(<App />)
+
+    const heading = await screen.findByRole('heading', { name: '今日 ETF 规模快照' })
+    const panel = heading.closest('section')
+    expect(panel).not.toBeNull()
+    const withinPanel = within(panel as HTMLElement)
+
+    expect(
+      withinPanel.getByRole('columnheader', { name: 'ETF交易价（MATCH）' }),
+    ).toBeInTheDocument()
+    expect(
+      withinPanel.queryByRole('columnheader', { name: '净值' }),
+    ).not.toBeInTheDocument()
+    expect(
+      withinPanel.getByText(/ETF交易价与基金净值\/IOPV可能存在折溢价/),
+    ).toBeInTheDocument()
+    expect(
+      withinPanel.getByText(/主表仅展示每只 ETF 的最新数据版本/),
+    ).toBeInTheDocument()
+    expect(
+      withinPanel.getAllByText('20260511#20260512T023410Z#demo').length,
+    ).toBeGreaterThan(0)
+  })
+
   it('clears newly entered secrets after save and never stores key material locally', async () => {
     render(<App />)
     await screen.findByText('已配置 · ****7890')
