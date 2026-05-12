@@ -103,6 +103,17 @@ def _load_master_key(key_version: int) -> bytes:
     return raw.encode("utf-8")
 
 
+def install_master_key_env(master_key: str) -> None:
+    """Expose the bootstrap master key to versioned crypto operations.
+
+    Runtime config is loaded through Pydantic Settings, but historical
+    key rotation reads by env-var name (`FUNDS_DASHBOARD_MASTER_KEY`,
+    `FUNDS_DASHBOARD_MASTER_KEY_V2`, ...). Keep the bootstrap key in the
+    same namespace so web and CLI entry points behave identically.
+    """
+    os.environ.setdefault(_master_key_env_name(CURRENT_KEY_VERSION), master_key)
+
+
 def _derive_key(master_key: bytes, salt: bytes, algorithm_version: int) -> bytes:
     iterations = _ITERATION_TABLE.get(algorithm_version)
     if iterations is None:
