@@ -105,3 +105,59 @@ def test_no_api_key_passes_env_without_wind_api_key() -> None:
         client.call("fund_data:foo", {})
     env = run_mock.call_args.kwargs["env"]
     assert "WIND_API_KEY" not in env
+
+
+# --- argv shape (Wind CLI signature compliance) --------------------------
+
+
+def test_tool_name_with_colon_splits_into_server_type_and_tool() -> None:
+    """Real-run bug 2026-05-11 (Alex msg=293ecab0): the Wind CLI signature
+    is `cli.mjs call <server_type> <tool_name> '<json>'` — server_type
+    and tool_name are SEPARATE positional argv entries.
+
+    The runner uses the project-internal `<server_type>:<tool_name>`
+    convention (audit + fixtures, e.g. `fund_data:get_fund_price_indicators`).
+    The wrapper MUST split that colon into two argv positions before
+    spawning, otherwise the CLI sees one bogus arg and returns
+    `exit 1` for every call.
+    """
+    client = WindClient(node_path="node", cli_script="cli.mjs")
+    with patch("funds_dashboard.wind.subprocess.run") as run_mock:
+        run_mock.return_value = _fake_completed(_well_formed_envelope())
+        client.call("fund_data:get_fund_quote", {"windcode": "510300.SH"})
+
+    args, kwargs = run_mock.call_args
+    argv = args[0] if args else kwargs["args"]
+    # Expected shape:
+    #   [<node>, <cli.mjs>, "call", "fund_data", "get_fund_quote", <json>]
+    # The colon-form `fund_data:get_fund_quote` MUST NOT appear as a
+    # single arg.
+    assert "fund_data:get_fund_quote" not in argv, (
+        f"colon-form tool_name leaked as single argv element: {argv}"
+    )
+    assert "call" in argv
+    call_idx = argv.index("call")
+    assert argv[call_idx + 1] == "fund_data", (
+        f"server_type position wrong; argv after `call` = {argv[call_idx + 1:]}"
+    )
+    assert argv[call_idx + 2] == "get_fund_quote", (
+        f"tool_name position wrong; argv after server_type = {argv[call_idx + 2:]}"
+    )
+
+
+def test_tool_name_without_colon_routes_to_empty_server_type() -> None:
+    """Backwards-compat: a bare tool name (no `<server_type>:` prefix)
+    is forwarded with an empty server_type so the CLI returns a clear
+    error rather than silently routing to the wrong backend."""
+    client = WindClient(node_path="node", cli_script="cli.mjs")
+    with patch("funds_dashboard.wind.subprocess.run") as run_mock:
+        run_mock.return_value = _fake_completed(_well_formed_envelope())
+        client.call("get_fund_quote", {"windcode": "510300.SH"})
+
+    args, kwargs = run_mock.call_args
+    argv = args[0] if args else kwargs["args"]
+    call_idx = argv.index("call")
+    assert argv[call_idx + 1] == "", (
+        f"missing-colon must yield empty server_type; got {argv[call_idx + 1]!r}"
+    )
+    assert argv[call_idx + 2] == "get_fund_quote"
