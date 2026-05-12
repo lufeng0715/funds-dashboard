@@ -120,7 +120,29 @@ class WindClient:
         import os
 
         payload_json = json.dumps(payload, ensure_ascii=False)
-        argv = [self._node_path, self._cli_script, "call", tool_name, payload_json]
+        # The Wind CLI signature is
+        #   `cli.mjs call <server_type> <tool_name> '<json>'`
+        # — server_type and tool_name are separate positional args.
+        # We accept the project-internal `<server_type>:<tool_name>`
+        # convention (used in audit + fixtures, e.g.
+        # `fund_data:get_fund_price_indicators`) and split it here so
+        # the subprocess argv matches the CLI's expected shape.
+        if ":" in tool_name:
+            server_type, real_tool = tool_name.split(":", 1)
+        else:
+            # Backwards-compat: bare tool name without server_type
+            # prefix is treated as having an empty server_type so the
+            # CLI surfaces a clear error rather than silently routing
+            # to the wrong backend.
+            server_type, real_tool = "", tool_name
+        argv = [
+            self._node_path,
+            self._cli_script,
+            "call",
+            server_type,
+            real_tool,
+            payload_json,
+        ]
 
         # Build env: inherit ours, layer the (sensitive) key on top so
         # the Wind CLI can pick it up without it crossing argv.

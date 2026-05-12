@@ -62,10 +62,16 @@ def fetch(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     # Lazy import so `serve` doesn't pay the cost when not needed.
+    from .db import init_sessionmaker
     from .scheduler.runner import run_daily_fetch
 
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
+    # `run_daily_fetch` uses `session_scope()` which depends on the
+    # global session factory; FastAPI's lifespan hook (`main.make_app`)
+    # initialises it on serve, but a standalone CLI fetch goes around
+    # that path, so initialise here too.
+    init_sessionmaker(settings.database_url)
     LOG.info("manual fetch: trade_date=%s force=%s", args.trade_date, args.force)
     result = run_daily_fetch(settings, trade_date=args.trade_date, force=args.force)
     LOG.info(
