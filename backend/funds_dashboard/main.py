@@ -9,6 +9,7 @@ attribute exists for ASGI servers that need it directly
 from __future__ import annotations
 
 import logging
+import os
 
 from fastapi import FastAPI
 
@@ -44,6 +45,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "restart. See docs/MVP_FIELD_DICTIONARY.md §"
             "Bootstrap secrets."
         )
+    os.environ.setdefault(
+        "FUNDS_DASHBOARD_MASTER_KEY",
+        settings.master_key.get_secret_value(),
+    )
 
     init_sessionmaker(settings.database_url)
 
