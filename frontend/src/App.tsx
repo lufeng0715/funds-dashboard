@@ -26,7 +26,7 @@ type AuditResponse = {
   items: AuditItem[]
 }
 
-type SaveState = 'idle' | 'loading' | 'success' | 'failure'
+type SaveState = 'idle' | 'loading' | 'success' | 'failure' | 'auth_required'
 type WindStatusText = '未配置' | '已配置 · 待测试' | '测试通过' | '测试失败' | '需要轮换'
 
 type WindForm = {
@@ -309,6 +309,7 @@ function App() {
   const [saveState, setSaveState] = useState<Record<string, SaveState>>({})
   const [authError, setAuthError] = useState('')
   const [loadError, setLoadError] = useState('')
+  const isAuthenticated = authError === ''
   const [loginUser, setLoginUser] = useState('admin')
   const [loginPassword, setLoginPassword] = useState('')
   const [loginError, setLoginError] = useState('')
@@ -418,6 +419,10 @@ function App() {
 
   async function saveWindSecret(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!isAuthenticated) {
+      setSaveState((current) => ({ ...current, wind_secret: 'auth_required' }))
+      return
+    }
     if (!secretDraft.trim()) {
       return
     }
@@ -578,7 +583,7 @@ function App() {
       <EtfSnapshotsPanel
         data={snapshots}
         error={snapshotsError}
-        isAuthenticated={!authError}
+        isAuthenticated={isAuthenticated}
         onRefresh={() => {
           void loadSnapshots()
         }}
@@ -648,6 +653,7 @@ function App() {
                 labels={{
                   loading: '保存中',
                   success: '已替换',
+                  auth_required: '请先登录后保存 Wind Key',
                   failure: '替换失败，请重试',
                 }}
               />
@@ -1244,14 +1250,18 @@ function OperationStatus({
   labels,
 }: {
   state?: SaveState
-  labels: Record<Exclude<SaveState, 'idle'>, string>
+  labels: Partial<Record<Exclude<SaveState, 'idle'>, string>>
 }) {
   if (!state || state === 'idle') {
     return null
   }
+  const label = labels[state]
+  if (!label) {
+    return null
+  }
   return (
     <span className={state === 'failure' ? 'fail' : state === 'success' ? 'ok' : ''}>
-      {labels[state]}
+      {label}
     </span>
   )
 }
