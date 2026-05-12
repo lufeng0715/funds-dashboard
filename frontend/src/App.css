@@ -365,3 +365,91 @@ td input {
     grid-template-columns: 1fr;
   }
 }
+
+/* ETF Snapshot panel — read-only daily-fetch surface. */
+.etf-snapshots-panel {
+  margin: 1.5rem 0 2rem;
+  padding: 1.25rem;
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(120, 120, 130, 0.18);
+  border-radius: 12px;
+}
+.etf-snapshots-panel .panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.etf-snapshots-panel .panel-header h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+.etf-snapshots-panel .panel-meta {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  font-size: 0.85rem;
+  color: var(--color-muted, #6b7280);
+}
+.etf-snapshots-panel .panel-meta button {
+  font-size: 0.85rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid rgba(120, 120, 130, 0.3);
+  background: white;
+  cursor: pointer;
+}
+.etf-snapshot-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.etf-snapshot-table th,
+.etf-snapshot-table td {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(120, 120, 130, 0.12);
+}
+.etf-snapshot-table th {
+  background: rgba(120, 120, 130, 0.05);
+  font-weight: 600;
+}
+.etf-snapshot-table tbody tr:hover {
+  background: rgba(120, 120, 130, 0.04);
+}
+.status-pill {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.status-pill.status-valid {
+  background: #d1fae5;
+  color: #065f46;
+}
+.status-pill.status-invalid {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.status-pill.status-missing {
+  background: #fef3c7;
+  color: #92400e;
+}
+.status-pill.status-not_applicable {
+  background: #e5e7eb;
+  color: #4b5563;
+}
+.panel-note {
+  margin-top: 1rem;
+  font-size: 0.8rem;
+  color: var(--color-muted, #6b7280);
+  line-height: 1.5;
+}
+.empty-state {
+  padding: 1.5rem;
+  background: rgba(120, 120, 130, 0.04);
+  border-radius: 8px;
+  color: var(--color-muted, #6b7280);
+}

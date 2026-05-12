@@ -17,6 +17,7 @@ from fastapi import APIRouter
 
 from .auth import require_authenticated_admin
 from .config import router as config_router
+from .etf import router as etf_router
 from .health import router as health_router
 from .login import router as login_router
 
@@ -26,6 +27,8 @@ router = APIRouter(prefix="/api/v1")
 router.include_router(health_router)
 router.include_router(login_router)
 router.include_router(config_router)
+# Protected data routers (auth attached at the route level).
+router.include_router(etf_router)
 
 # Protected sub-routers (config-Web, scheduler controls, data
 # endpoints) attach `Depends(require_authenticated_admin)` on each
