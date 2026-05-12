@@ -52,7 +52,8 @@ type EtfSnapshot = {
   name: string | null
   trade_date: string
   fund_size_yuan: number | null
-  nav: number | null
+  market_price: number | null
+  unit_nav: number | null
   cumulative_nav: number | null
   change_range: number | null
   iopv: number | null
@@ -170,6 +171,28 @@ const runtimeEtfs = (runtime: ConfigStatus['runtime']) => {
       notes: typeof row.notes === 'string' ? row.notes : '',
     }
   })
+}
+
+const formatPrice = (value: number | null) =>
+  value !== null ? value.toFixed(4) : '—'
+
+const formatSharesYi = (value: number | null) =>
+  value !== null ? (value / 1e8).toFixed(2) : '—'
+
+const missingReasonLabel = (reason: string | null) => {
+  switch (reason) {
+    case null:
+    case '':
+      return '—'
+    case 'invalid_value':
+      return 'Wind 返回无效值'
+    case 'not_returned':
+      return '字段未返回'
+    case 'not_applicable':
+      return '标的不适用'
+    default:
+      return reason
+  }
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -1150,7 +1173,7 @@ function EtfSnapshotsPanel({
         <div className="notice demo-banner" role="status">
           ⚠️ <strong>降级数据</strong> — 本批数据来自 <code>analytics_data:get_financial_data</code>{' '}
           NL 兜底查询（Wind 后端 <code>get_fund_price_indicators</code> 暂不可用）。基金规模可读，
-          但份额 / IOPV / 折溢价等结构化行情字段未返回，按 <code>MISSING/not_returned</code> 标注，
+          但总份额 / 单位净值 / IOPV 等结构化行情字段未返回，按 <code>MISSING/not_returned</code> 标注，
           <strong>不要</strong>当作完整结构化 Wind 行情解读。
         </div>
       ) : null}
@@ -1168,11 +1191,13 @@ function EtfSnapshotsPanel({
             <tr>
               <th>windcode</th>
               <th>简称</th>
-              <th>基金规模 (亿元)</th>
-              <th>份额 (份)</th>
+              <th>基金规模（亿元）</th>
+              <th>总份额（亿份）</th>
               <th>份额状态</th>
               <th>缺失原因</th>
-              <th title="来源：fund_data:get_fund_quote MATCH">ETF交易价（MATCH）</th>
+              <th title="来源：fund_data:get_fund_quote MATCH">市场价（MATCH）</th>
+              <th title="来源：analytics_data 最新单位净值">单位净值</th>
+              <th title="来源：analytics_data 实时IOPV">IOPV</th>
               <th>数据源版本</th>
             </tr>
           </thead>
@@ -1186,14 +1211,16 @@ function EtfSnapshotsPanel({
                     ? (r.fund_size_yuan / 1e8).toFixed(2)
                     : '—'}
                 </td>
-                <td>{r.shares !== null ? r.shares.toLocaleString() : '—'}</td>
+                <td>{formatSharesYi(r.shares)}</td>
                 <td>
                   <span className={`status-pill status-${r.shares_status.toLowerCase()}`}>
                     {r.shares_status}
                   </span>
                 </td>
-                <td>{r.missing_reason ?? '—'}</td>
-                <td>{r.nav !== null ? r.nav.toFixed(4) : '—'}</td>
+                <td title={r.missing_reason ?? undefined}>{missingReasonLabel(r.missing_reason)}</td>
+                <td>{formatPrice(r.market_price)}</td>
+                <td>{formatPrice(r.unit_nav)}</td>
+                <td>{formatPrice(r.iopv)}</td>
                 <td className="dsv-cell" title={r.data_source_version}>
                   {r.data_source_version}
                 </td>
@@ -1204,8 +1231,8 @@ function EtfSnapshotsPanel({
       )}
       <p className="panel-note">
         主表仅展示每只 ETF 的最新数据版本；完整 <code>data_source_version</code> 列表保留用于审计追溯。
-        ETF交易价来自 <code>fund_data:get_fund_quote</code> 的 <code>MATCH</code>，是日间交易价/市价代理；
-        ETF交易价与基金净值/IOPV可能存在折溢价，二者不是同一口径。
+        市场价来自 <code>fund_data:get_fund_quote</code> 的 <code>MATCH</code>，是日间交易价/市价代理；
+        ETF交易价/市场价与基金单位净值、IOPV可能存在折溢价，三者不是同一口径。
       </p>
       <p className="panel-note">
         缺失原因映射：<code>invalid_value</code> Wind 返回无效值；

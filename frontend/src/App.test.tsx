@@ -26,7 +26,24 @@ function handleConfigFetch(input: RequestInfo | URL, init?: RequestInit) {
           name: '华泰柏瑞沪深300ETF',
           trade_date: '2026-05-11',
           fund_size_yuan: 168659650000,
-          nav: null,
+          market_price: 4.963,
+          unit_nav: 4.9685,
+          cumulative_nav: null,
+          change_range: null,
+          iopv: 4.966,
+          forward_discount: null,
+          shares: 44829000000,
+          shares_status: 'VALID',
+          missing_reason: null,
+          data_source_version: '20260511#20260512T023410Z#demo',
+        },
+        {
+          windcode: '510500.SH',
+          name: '南方中证500ETF',
+          trade_date: '2026-05-11',
+          fund_size_yuan: 49766000000,
+          market_price: 8.862,
+          unit_nav: null,
           cumulative_nav: null,
           change_range: null,
           iopv: null,
@@ -178,7 +195,7 @@ describe('config page', () => {
     ).toBeInTheDocument()
   })
 
-  it('labels MATCH as ETF trading price and keeps provenance visible', async () => {
+  it('labels market price, unit nav, iopv and shares with distinct ETF units', async () => {
     render(<App />)
 
     const heading = await screen.findByRole('heading', { name: '今日 ETF 规模快照' })
@@ -187,14 +204,28 @@ describe('config page', () => {
     const withinPanel = within(panel as HTMLElement)
 
     expect(
-      withinPanel.getByRole('columnheader', { name: 'ETF交易价（MATCH）' }),
+      withinPanel.getByRole('columnheader', { name: '市场价（MATCH）' }),
+    ).toBeInTheDocument()
+    expect(
+      withinPanel.getByRole('columnheader', { name: '单位净值' }),
+    ).toBeInTheDocument()
+    expect(
+      withinPanel.getByRole('columnheader', { name: 'IOPV' }),
+    ).toBeInTheDocument()
+    expect(
+      withinPanel.getByRole('columnheader', { name: '总份额（亿份）' }),
     ).toBeInTheDocument()
     expect(
       withinPanel.queryByRole('columnheader', { name: '净值' }),
     ).not.toBeInTheDocument()
+    expect(withinPanel.getByText('448.29')).toBeInTheDocument()
+    expect(withinPanel.getByText('4.9630')).toBeInTheDocument()
+    expect(withinPanel.getByText('4.9685')).toBeInTheDocument()
+    expect(withinPanel.getByText('4.9660')).toBeInTheDocument()
     expect(
-      withinPanel.getByText(/ETF交易价与基金净值\/IOPV可能存在折溢价/),
+      withinPanel.getByText(/ETF交易价\/市场价与基金单位净值、IOPV可能存在折溢价，三者不是同一口径/),
     ).toBeInTheDocument()
+    expect(withinPanel.getByText('字段未返回')).toBeInTheDocument()
     expect(
       withinPanel.getByText(/主表仅展示每只 ETF 的最新数据版本/),
     ).toBeInTheDocument()
