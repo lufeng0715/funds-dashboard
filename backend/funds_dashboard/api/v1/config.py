@@ -17,6 +17,7 @@ from ...config_store import crypto
 from ...db import get_db_session
 from ...db.models import ConfigAuditLog, RuntimeConfig, SecretConfig
 from ...wind import WindClient, WindError
+from ...wind.redact import redact_secrets
 
 
 router = APIRouter(prefix="/config", tags=["config"])
@@ -351,7 +352,7 @@ def test_wind_connection(
         # the opaque "wind CLI exit 1" message.
         detail_parts = [f"Wind connection test failed: {exc}"]
         if exc.stderr:
-            detail_parts.append(exc.stderr[:500])
+            detail_parts.append(redact_secrets(exc.stderr[:500]))
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="\n".join(detail_parts),
