@@ -154,6 +154,165 @@ def _read_cell(
 # --- the entry point ------------------------------------------------------
 
 
+# --- multi-tool fallback parser (PR (d) runner-fund-data-tool-switch) ----
+#
+# Background: feng-lu msg=22188ff4 + Linda msg=744a40f9 + Alex msg=293ecab0
+# captured that the original probe tool `fund_data:get_fund_price_indicators`
+# is currently returning `TOOL_ERROR: 服务暂时不可用` for every call
+# regardless of API key validity. The runner therefore can't land any
+# real ETF data via that single-tool path.
+#
+# Switch the runner to a TWO-tool flow that uses currently-working
+# Wind tools:
+#   * `fund_data:get_fund_quote {"windcode": <code>}` — returns
+#     intraday minute-level rows. Last row's `MATCH` (last quoted
+#     price) is the best available proxy for `nav` during trading
+#     hours. The same response carries no name + no fund_size +
+#     no shares.
+#   * `analytics_data:get_financial_data {"question":
+#     "<code> 最新基金规模 中文简称"}` — Wind NL query that returns
+#     a structured single-row response with columns `Wind代码` /
+#     `证券简称` / `最新基金规模` (亿元). The NL routing happens
+#     server-side; we consume the structured JSON it returns.
+#
+# Linda's no-NL-to-core-table rule (msg=64b7d14d) is satisfied
+# because the analytics_data response IS structured (columns +
+# typed cells), and the raw Wind response is preserved into
+# `wind_fetch_audit.wind_raw_response` exactly like every other
+# tool call (Vera consistency_checks.md §5 + §11).
+#
+# Fields the two-call flow CAN populate today:
+#   - name (from analytics_data 证券简称)
+#   - fund_size_yuan (from analytics_data 最新基金规模, 亿元 → 元 ×1e8)
+#   - nav (from get_fund_quote last MATCH — intraday proxy, not
+#     formal end-of-day NAV; see EtfDailySnapshot field note)
+#
+# Fields that STAY MISSING/not_returned because no currently-working
+# tool surfaces them:
+#   - shares (outstanding-shares-of-fund — not VOLUME)
+#   - iopv, forward_discount (`get_fund_price_indicators` exclusive)
+#   - cumulative_nav, change_range (formal NAV-derived fields)
+#
+# Linda's no-coerce-to-0 rule extended to these fields too: every
+# unreached field lands None + `missing_reason="not_returned"`,
+# never 0 or a fabricated value (msg=91b45123).
+
+_QUOTE_MATCH_COL = "MATCH"
+
+_ANALYTICS_NAME_COL = "证券简称"
+_ANALYTICS_FUND_SIZE_COL = "最新基金规模"
+
+
+@dataclass(frozen=True)
+class EtfSnapshotMultiInput:
+    """Input bundle for the two-call ETF snapshot parser.
+
+    Caller (the scheduler) provides both Wind responses + the audit
+    bookkeeping. The parser derives one `ParsedEtfSnapshot` per
+    windcode merging the two sources.
+
+    `quote_audit_id` is the wind_fetch_audit FK we stamp onto the
+    derived row. `size_audit_id` is recorded separately in the audit
+    table by the runner; the JOIN to recover both sources for a
+    derived row goes through `(trade_date, data_source_version)`.
+    """
+
+    windcode: str
+    quote_result: WindResult
+    size_result: WindResult
+    trade_date: str
+    data_source_version: str
+    quote_audit_id: int
+
+
+def _extract_last_match_price(quote: WindResult) -> float | None:
+    """Pull the last quoted price from a `get_fund_quote` response.
+
+    The CLI returns rows in chronological order; the last row holds
+    the most recent minute bar. Returns None if the column isn't
+    present or no rows came back (e.g. non-trading day).
+    """
+    column_index = {name: i for i, name in enumerate(quote.columns)}
+    idx = column_index.get(_QUOTE_MATCH_COL)
+    if idx is None or not quote.rows:
+        return None
+    last_row = quote.rows[-1]
+    if idx >= len(last_row):
+        return None
+    raw = last_row[idx]
+    if _classify_marker(raw) is not None:
+        return None
+    return _coerce_float(raw)
+
+
+def _extract_analytics_name_and_size(
+    size: WindResult,
+) -> tuple[str | None, float | None]:
+    """Pull `(name, fund_size_yuan)` from a Wind analytics_data response.
+
+    The probe shape:
+        columns = ["Wind代码", "证券简称", "最新基金规模"]
+        rows = [["510300.SH", "华泰柏瑞沪深300ETF", 1686.5965]]
+    Fund size is in 亿元 — multiply by 1e8 to normalize to 元 (the
+    canonical unit `EtfDailySnapshot.fund_size_yuan` uses).
+    """
+    column_index = {name: i for i, name in enumerate(size.columns)}
+    if not size.rows:
+        return None, None
+    row = size.rows[0]
+    name_idx = column_index.get(_ANALYTICS_NAME_COL)
+    size_idx = column_index.get(_ANALYTICS_FUND_SIZE_COL)
+    name: str | None = None
+    if name_idx is not None and name_idx < len(row):
+        raw_name = row[name_idx]
+        if isinstance(raw_name, str) and raw_name.strip():
+            name = raw_name.strip()
+    fund_size_yuan: float | None = None
+    if size_idx is not None and size_idx < len(row):
+        raw_size = row[size_idx]
+        if _classify_marker(raw_size) is None:
+            yi = _coerce_float(raw_size)
+            if yi is not None:
+                fund_size_yuan = yi * 1e8
+    return name, fund_size_yuan
+
+
+def parse_etf_snapshot_from_multi_tool(
+    payload: EtfSnapshotMultiInput,
+) -> ParsedEtfSnapshot:
+    """Merge two Wind responses into one ETF snapshot row.
+
+    Returns exactly one `ParsedEtfSnapshot` (vs the original
+    single-tool parser which returned one-per-Wind-row, because
+    `get_fund_price_indicators` could return multiple windcodes
+    in one call). Here the caller passes one windcode at a time so
+    the output is always a single row.
+
+    Unobtainable fields (`shares`, `iopv`, `forward_discount`,
+    `cumulative_nav`, `change_range`) come back as `None` with
+    `missing_reason="not_returned"`. Linda's no-coerce-to-0 rule
+    (msg=91b45123) extends to those: never 0, never fabricated.
+    """
+    nav = _extract_last_match_price(payload.quote_result)
+    name, fund_size_yuan = _extract_analytics_name_and_size(payload.size_result)
+    return ParsedEtfSnapshot(
+        wind_fetch_audit_id=payload.quote_audit_id,
+        data_source_version=payload.data_source_version,
+        windcode=payload.windcode,
+        trade_date=payload.trade_date,
+        name=name,
+        fund_size_yuan=fund_size_yuan,
+        nav=nav,
+        cumulative_nav=None,
+        change_range=None,
+        iopv=None,
+        forward_discount=None,
+        shares=None,
+        shares_status="MISSING",
+        missing_reason="not_returned",
+    )
+
+
 def parse_etf_snapshot_rows(payload: EtfSnapshotInput) -> list[ParsedEtfSnapshot]:
     """Convert every row of `payload.wind_result.rows` into a
     `ParsedEtfSnapshot`.

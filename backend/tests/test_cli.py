@@ -53,21 +53,40 @@ def _patched_settings(tmp_path, monkeypatch):
     yield db_path
 
 
-def _ok_wind_result(windcode: str) -> WindResult:
+def _quote_result(windcode: str) -> WindResult:
+    """Fake `fund_data:get_fund_quote` response — used by the two-call
+    fetch flow introduced in PR (d) `runner-fund-data-tool-switch`."""
     return WindResult(
-        tool_name="fund_data:get_fund_price_indicators",
-        request_payload={"codes": [windcode]},
-        columns=[
-            "NAME", "MATCH", "SHARES", "FUNDSIZE", "NETVALUE",
-            "ACCUMULATEDNETVALUE", "CHANGERANGE", "IOPV",
-            "FORWARDDISCOUNT", "windcode",
-        ],
-        rows=[
-            [f"name-{windcode}", 1.0, 5_000_000.0, 1.0e10, 1.0,
-             1.0, 0.0, 1.0, 0.0, windcode],
-        ],
+        tool_name="fund_data:get_fund_quote",
+        request_payload={"windcode": windcode},
+        columns=["MATCH", "AVGPRICE", "VOLUME", "TURNOVER", "TIME", "_DATE"],
+        rows=[[1.234, "1.0", "200", "200",
+               "2026/05/11 14:59:00.000(+32)", "20260511"]],
         raw_stdout='{"data":{}}',
     )
+
+
+def _size_result(windcode: str) -> WindResult:
+    """Fake `analytics_data:get_financial_data` response."""
+    return WindResult(
+        tool_name="analytics_data:get_financial_data",
+        request_payload={"question": f"{windcode} 最新基金规模 中文简称"},
+        columns=["Wind代码", "证券简称", "最新基金规模"],
+        rows=[[windcode, f"name-{windcode}", 100.0]],
+        raw_stdout='{"data":{}}',
+    )
+
+
+def _fake_call_dispatch(self, tool_name, payload):
+    """Two-tool dispatcher: routes by tool_name to the appropriate
+    fake response. Pins the runner contract that each ETF triggers
+    exactly two Wind calls — `get_fund_quote` + analytics-data."""
+    if tool_name == "fund_data:get_fund_quote":
+        return _quote_result(payload["windcode"])
+    if tool_name == "analytics_data:get_financial_data":
+        windcode = payload["question"].split()[0]
+        return _size_result(windcode)
+    raise AssertionError(f"unexpected tool_name: {tool_name!r}")
 
 
 def test_cli_fetch_initialises_session_factory(_patched_settings) -> None:
@@ -83,11 +102,9 @@ def test_cli_fetch_initialises_session_factory(_patched_settings) -> None:
     the same RuntimeError seen in production.
     """
 
-    def _fake_call(self, tool_name, payload):
-        return _ok_wind_result(payload["codes"][0])
-
     with patch(
-        "funds_dashboard.scheduler.runner.WindClient.call", _fake_call
+        "funds_dashboard.scheduler.runner.WindClient.call",
+        _fake_call_dispatch,
     ):
         exit_code = cli_fetch(
             argv=["--trade-date", "2026-05-11", "--force"]
@@ -109,11 +126,9 @@ def test_cli_fetch_writes_markdown(_patched_settings, tmp_path) -> None:
     sets up the session factory by hand.
     """
 
-    def _fake_call(self, tool_name, payload):
-        return _ok_wind_result(payload["codes"][0])
-
     with patch(
-        "funds_dashboard.scheduler.runner.WindClient.call", _fake_call
+        "funds_dashboard.scheduler.runner.WindClient.call",
+        _fake_call_dispatch,
     ):
         cli_fetch(argv=["--trade-date", "2026-05-11", "--force"])
 

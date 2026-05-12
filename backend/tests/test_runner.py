@@ -77,52 +77,86 @@ def settings(tmp_path) -> Settings:
     return s
 
 
-def _wind_result(windcode: str, *, shares: object = 5_000_000.0) -> WindResult:
+def _quote_result(windcode: str, *, last_match: object = 1.234) -> WindResult:
+    """Fake `fund_data:get_fund_quote` response — intraday minute bars.
+
+    Matches the real CLI shape captured by Alex msg=293ecab0 probe:
+    last row's `MATCH` is the latest quoted price. Other columns
+    elided for brevity (parser only reads MATCH on the last row).
+    """
     return WindResult(
-        tool_name="fund_data:get_fund_price_indicators",
-        request_payload={"codes": [windcode]},
-        columns=[
-            "NAME",
-            "MATCH",
-            "SHARES",
-            "FUNDSIZE",
-            "NETVALUE",
-            "ACCUMULATEDNETVALUE",
-            "CHANGERANGE",
-            "IOPV",
-            "FORWARDDISCOUNT",
-            "windcode",
-        ],
+        tool_name="fund_data:get_fund_quote",
+        request_payload={"windcode": windcode},
+        columns=["MATCH", "AVGPRICE", "VOLUME", "TURNOVER", "TIME", "_DATE"],
         rows=[
-            [
-                f"name-{windcode}",
-                1.0,
-                shares,
-                1.0e10,
-                1.0,
-                1.0,
-                0.0,
-                1.0,
-                0.0,
-                windcode,
-            ]
+            ["1.000", "0.999", "100", "100", "2026/05/11 09:30:00.000(+32)", "20260511"],
+            [last_match, "1.0", "200", "200", "2026/05/11 14:59:00.000(+32)", "20260511"],
         ],
         raw_stdout='{"data":{}}',
     )
 
 
+def _size_result(
+    windcode: str, *, name: str | None = None, size_yi: float = 100.0
+) -> WindResult:
+    """Fake `analytics_data:get_financial_data` size response.
+
+    `name` defaults to `f"name-{windcode}"` so tests can keep the
+    "name landed" assertion. Pass explicit `None` to simulate a Wind
+    response without name (rare; analytics_data usually returns it).
+    """
+    rendered_name = f"name-{windcode}" if name is None else name
+    return WindResult(
+        tool_name="analytics_data:get_financial_data",
+        request_payload={"question": f"{windcode} 最新基金规模 中文简称"},
+        columns=["Wind代码", "证券简称", "最新基金规模"],
+        rows=[[windcode, rendered_name, size_yi]],
+        raw_stdout='{"data":{}}',
+    )
+
+
+def _make_dispatch(*, override_quote=None, override_size=None):
+    """Build a `WindClient.call`-shaped fake that routes by tool_name.
+
+    `override_quote` / `override_size`, when set, replace the default
+    response for that tool (used by failure-path tests).
+    """
+    def _fake_call(self, tool_name, payload):
+        windcode = payload.get("windcode") or (
+            payload.get("question", "").split()[0] if "question" in payload else ""
+        )
+        if tool_name == "fund_data:get_fund_quote":
+            if override_quote is not None:
+                return override_quote(windcode)
+            return _quote_result(windcode)
+        if tool_name == "analytics_data:get_financial_data":
+            if override_size is not None:
+                return override_size(windcode)
+            return _size_result(windcode)
+        raise AssertionError(
+            f"unexpected tool_name in test fake: {tool_name!r}"
+        )
+    return _fake_call
+
+
 def test_run_daily_fetch_happy_path_writes_rows_and_markdown(settings, tmp_path) -> None:
     """Every ETF in the pool returns numeric data → all rows persist
-    + markdown gets written."""
+    + markdown gets written.
 
-    def _fake_call(self, tool_name, payload):
-        windcode = payload["codes"][0]
-        return _wind_result(windcode)
-
-    with patch("funds_dashboard.scheduler.runner.WindClient.call", _fake_call):
+    Runner uses two Wind tools per ETF (PR (d) `runner-fund-data-tool-switch`):
+      - `fund_data:get_fund_quote` → intraday MATCH last → nav proxy
+      - `analytics_data:get_financial_data` → name + fund_size_yuan
+    `shares` / `iopv` / etc stay `MISSING/not_returned` because no
+    currently-working Wind tool returns them. Markdown shows `MISSING`
+    status without a `VALID` claim for those fields.
+    """
+    with patch(
+        "funds_dashboard.scheduler.runner.WindClient.call",
+        _make_dispatch(),
+    ):
         result = run_daily_fetch(settings, trade_date=_REPORT_TRADE_DATE)
 
-    assert result.audit_rows == 3
+    assert result.audit_rows == 6  # 2 tool calls × 3 ETFs
     assert result.derived_rows == 3
     assert result.failed_windcodes == []
     assert result.markdown_path is not None
@@ -136,20 +170,23 @@ def test_run_daily_fetch_happy_path_writes_rows_and_markdown(settings, tmp_path)
             "510500.SH",
             "588200.SH",
         }
+        for snap in snapshots:
+            # name + fund_size from analytics_data, nav from quote
+            assert snap.name and snap.name.startswith("name-")
+            assert snap.fund_size_yuan == 100.0 * 1e8  # 100 亿元 → 元
+            assert snap.nav == 1.234  # last-row MATCH
+            # `shares` family — no tool surfaces this; stays MISSING
+            assert snap.shares is None
+            assert snap.shares_status == "MISSING"
+            assert snap.missing_reason == "not_returned"
+            assert snap.iopv is None
+            assert snap.forward_discount is None
         audits = session.scalars(select(WindFetchAudit)).all()
-        assert len(audits) == 3
-        # `derived_record_count` was updated post-insert
-        for a in audits:
-            assert a.derived_record_count == 1
+        # 2 tool calls × 3 windcodes = 6 audit rows
+        assert len(audits) == 6
 
-    # Markdown content. Inspect the actual data rows (skip header
-    # + separator + closing legend) rather than splitting the entire
-    # document — Vera msg=3d6bc478 LOW caught the previous heuristic
-    # was checking a header cell, not a value cell.
     text = result.markdown_path.read_text(encoding="utf-8")
     assert "report_type: daily_dashboard" in text
-    assert "510300.SH" in text
-    assert "510500.SH" in text
     data_lines = [
         line for line in text.splitlines()
         if line.startswith("| 510") or line.startswith("| 588")
@@ -158,59 +195,72 @@ def test_run_daily_fetch_happy_path_writes_rows_and_markdown(settings, tmp_path)
     for data_line in data_lines:
         cells = [cell.strip() for cell in data_line.split("|")[1:-1]]
         # cells = [windcode, name, fund_size, shares_status, missing_reason]
+        # fund_size came back valid; shares is MISSING/not_returned
         assert cells[2] != "—", (
-            f"valid happy-path row leaked the missing-data sentinel: {data_line!r}"
+            f"happy path row lost fund_size: {data_line!r}"
         )
-        assert cells[3] == "VALID"
-        assert cells[4] == "—"  # VALID rows have no reason
+        assert cells[3] == "MISSING"
+        assert cells[4] == "not_returned"
 
 
-def test_run_daily_fetch_handles_invalid_shares_real_wind_shape(settings) -> None:
-    """A WindResult with `SHARES="INVALID"` lands with `shares=NULL,
-    shares_status="INVALID", missing_reason="invalid_value"`. The
-    `FUNDSIZE` next to it is still persisted. (Anchors the runner
-    contract to Linda's real-probe boundary.)"""
+def test_run_daily_fetch_partial_failure_size_only(settings) -> None:
+    """analytics_data fails for one ETF → its row still lands with
+    name=None + fund_size=None, but NAV from get_fund_quote is kept.
+    Other ETFs unaffected. Pins the "partial visibility > hidden
+    failure" preference (Linda + Keira hotfix口径)."""
 
-    def _fake_call(self, tool_name, payload):
-        return _wind_result(payload["codes"][0], shares="INVALID")
-
-    with patch("funds_dashboard.scheduler.runner.WindClient.call", _fake_call):
-        result = run_daily_fetch(settings, trade_date=_REPORT_TRADE_DATE)
-
-    assert result.derived_rows == 3
-    with session_scope() as session:
-        rows = session.scalars(select(EtfDailySnapshot)).all()
-        for row in rows:
-            assert row.shares is None
-            assert row.shares != 0
-            assert row.shares_status == "INVALID"
-            assert row.missing_reason == "invalid_value"
-            assert row.fund_size_yuan == 1.0e10  # still landed
-
-    text = result.markdown_path.read_text(encoding="utf-8")
-    assert "invalid_value" in text
-
-
-def test_run_daily_fetch_partial_failure_leaves_other_rows_intact(settings) -> None:
-    """One ETF fails → the failure shows up in the report as a
-    not_returned row but the other ETFs still persist."""
-
-    def _fake_call(self, tool_name, payload):
-        windcode = payload["codes"][0]
+    def _size_fail(windcode):
         if windcode == "510500.SH":
-            raise WindError("simulated backend hiccup", stdout="", stderr="net")
-        return _wind_result(windcode)
+            raise WindError("simulated analytics_data outage", stdout="", stderr="")
+        return _size_result(windcode)
 
-    with patch("funds_dashboard.scheduler.runner.WindClient.call", _fake_call):
+    with patch(
+        "funds_dashboard.scheduler.runner.WindClient.call",
+        _make_dispatch(override_size=_size_fail),
+    ):
         result = run_daily_fetch(settings, trade_date=_REPORT_TRADE_DATE)
 
-    assert result.audit_rows == 2  # only the two that succeeded
+    # All 3 ETFs land — none are "failed" since NAV came through
+    assert result.failed_windcodes == []
+    assert result.derived_rows == 3
+    # 6 quote calls + 2 successful size calls = 5 audit rows (510500
+    # size call failed, no audit row produced).
+    assert result.audit_rows == 5
+
+    with session_scope() as session:
+        rows = session.scalars(
+            select(EtfDailySnapshot).where(EtfDailySnapshot.windcode == "510500.SH")
+        ).all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.nav == 1.234  # quote landed
+        assert row.fund_size_yuan is None  # size failed → MISSING
+        assert row.name is None
+
+
+def test_run_daily_fetch_partial_failure_quote_skip(settings) -> None:
+    """get_fund_quote fails for one ETF → that ETF gets skipped + counted
+    as failed. Other ETFs still land. Preserves PR #7's "failed Wind
+    fetch shows up as not_returned in the report" surface."""
+
+    def _quote_fail(windcode):
+        if windcode == "510500.SH":
+            raise WindError("simulated quote outage", stdout="", stderr="net")
+        return _quote_result(windcode)
+
+    with patch(
+        "funds_dashboard.scheduler.runner.WindClient.call",
+        _make_dispatch(override_quote=_quote_fail),
+    ):
+        result = run_daily_fetch(settings, trade_date=_REPORT_TRADE_DATE)
+
+    # 510500 fully failed (no quote → no row); 2 others got both tools
+    assert result.audit_rows == 4  # 2×2 successful pairs
     assert result.derived_rows == 2
     assert result.failed_windcodes == ["510500.SH"]
 
     text = result.markdown_path.read_text(encoding="utf-8")
-    assert "510500.SH" in text  # the failure still shows up in the table
-    # Failed row marker
+    assert "510500.SH" in text
     assert "not_returned" in text
 
 
@@ -258,12 +308,12 @@ def test_run_daily_fetch_prefers_encrypted_secret_over_env(settings) -> None:
         self._timeout_s = timeout_s
         self._api_key = api_key
 
-    def _fake_call(self, tool_name, payload):
-        return _wind_result(payload["codes"][0])
-
     with patch(
         "funds_dashboard.scheduler.runner.WindClient.__init__", _fake_init
-    ), patch("funds_dashboard.scheduler.runner.WindClient.call", _fake_call):
+    ), patch(
+        "funds_dashboard.scheduler.runner.WindClient.call",
+        _make_dispatch(),
+    ):
         run_daily_fetch(settings, trade_date=_REPORT_TRADE_DATE)
 
     assert "ak_FROM_SECRET_CONFIG_xxxxxxxxxxxxxx" in captured_keys
@@ -284,18 +334,18 @@ def test_force_rerun_upserts_daily_report_provenance(settings) -> None:
     immediately.
     """
 
-    def _fake_call(self, tool_name, payload):
-        return _wind_result(payload["codes"][0])
-
-    with patch("funds_dashboard.scheduler.runner.WindClient.call", _fake_call):
+    with patch(
+        "funds_dashboard.scheduler.runner.WindClient.call",
+        _make_dispatch(),
+    ):
         first = run_daily_fetch(settings, trade_date=_REPORT_TRADE_DATE)
         second = run_daily_fetch(
             settings, trade_date=_REPORT_TRADE_DATE, force=True
         )
 
-    # Both runs succeed.
-    assert first.audit_rows == 3
-    assert second.audit_rows == 3
+    # Both runs succeed — 2 tool calls × 3 ETFs = 6 audit rows per run.
+    assert first.audit_rows == 6
+    assert second.audit_rows == 6
     # And produce distinct version tokens (different seq).
     assert first.data_source_version != second.data_source_version
 
