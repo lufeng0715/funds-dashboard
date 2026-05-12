@@ -309,6 +309,10 @@ function App() {
   const [saveState, setSaveState] = useState<Record<string, SaveState>>({})
   const [authError, setAuthError] = useState('')
   const [loadError, setLoadError] = useState('')
+  const [loginUser, setLoginUser] = useState('admin')
+  const [loginPassword, setLoginPassword] = useState('')
+  const [loginError, setLoginError] = useState('')
+  const [isLoggingIn, setIsLoggingIn] = useState(false)
   // ETF snapshots — the "运行我看看" surface. Loaded after auth alongside
   // config so the dashboard's first paint shows real data when present.
   const [snapshots, setSnapshots] = useState<SnapshotsResponse | null>(null)
@@ -368,6 +372,30 @@ function App() {
       }
     }
   }, [])
+
+  async function handleLogin() {
+    setIsLoggingIn(true)
+    setLoginError('')
+    try {
+      const response = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: loginUser, password: loginPassword }),
+      })
+      if (!response.ok) {
+        setLoginError('用户名或密码错误')
+        return
+      }
+      setAuthError('')
+      setLoginPassword('')
+      await Promise.all([loadConfig(), loadSnapshots()])
+    } catch {
+      setLoginError('登录请求失败，请稍后重试')
+    } finally {
+      setIsLoggingIn(false)
+    }
+  }
 
   useEffect(() => {
     void loadConfig()
@@ -534,7 +562,17 @@ function App() {
         </div>
       </header>
 
-      {authError ? <div className="notice blocked">需要管理员权限</div> : null}
+      {authError ? (
+        <LoginForm
+          username={loginUser}
+          password={loginPassword}
+          error={loginError}
+          isLoading={isLoggingIn}
+          onUsernameChange={setLoginUser}
+          onPasswordChange={setLoginPassword}
+          onSuccess={handleLogin}
+        />
+      ) : null}
       {loadError ? <div className="notice failed">{loadError}</div> : null}
 
       <EtfSnapshotsPanel
@@ -1211,6 +1249,59 @@ function OperationStatus({
     <span className={state === 'failure' ? 'fail' : state === 'success' ? 'ok' : ''}>
       {labels[state]}
     </span>
+  )
+}
+
+function LoginForm({
+  username,
+  password,
+  error,
+  isLoading,
+  onUsernameChange,
+  onPasswordChange,
+  onSuccess,
+}: {
+  username: string
+  password: string
+  error: string
+  isLoading: boolean
+  onUsernameChange: (value: string) => void
+  onPasswordChange: (value: string) => void
+  onSuccess: () => void
+}) {
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    onSuccess()
+  }
+
+  return (
+    <div className="login-panel">
+      <h2>登录</h2>
+      <form className="form-grid" onSubmit={handleSubmit}>
+        <label>
+          用户名
+          <input
+            autoComplete="username"
+            type="text"
+            value={username}
+            onChange={(event) => onUsernameChange(event.target.value)}
+          />
+        </label>
+        <label>
+          密码
+          <input
+            autoComplete="current-password"
+            type="password"
+            value={password}
+            onChange={(event) => onPasswordChange(event.target.value)}
+          />
+        </label>
+        {error ? <p className="notice failed">{error}</p> : null}
+        <button disabled={isLoading} type="submit">
+          {isLoading ? '登录中…' : '登录'}
+        </button>
+      </form>
+    </div>
   )
 }
 
