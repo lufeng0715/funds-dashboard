@@ -60,3 +60,23 @@ def test_empty_master_key_refuses_startup(tmp_path):
     )
     with pytest.raises(StartupConfigError):
         create_app(settings)
+
+
+def test_create_app_makes_settings_master_key_available_to_crypto(
+    tmp_path, monkeypatch
+):
+    """The app may load `.env` through Pydantic settings rather than
+    process env. Secret encryption still needs the same key because the
+    crypto module reads the versioned key from `os.environ`.
+    """
+    monkeypatch.delenv("FUNDS_DASHBOARD_MASTER_KEY", raising=False)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path}/test.db",
+        FUNDS_DASHBOARD_MASTER_KEY="settings-only-master-key",
+    )
+
+    create_app(settings)
+
+    from funds_dashboard.config_store import crypto
+
+    assert crypto.decrypt(crypto.encrypt("secret")) == "secret"
