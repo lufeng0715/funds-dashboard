@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from funds_dashboard.config import Settings
+from funds_dashboard.config_store import crypto
 from funds_dashboard.main import StartupConfigError, create_app
 
 
@@ -77,6 +78,44 @@ def test_create_app_makes_settings_master_key_available_to_crypto(
 
     create_app(settings)
 
-    from funds_dashboard.config_store import crypto
-
     assert crypto.decrypt(crypto.encrypt("secret")) == "secret"
+
+
+def test_cli_fetch_makes_settings_master_key_available_to_crypto(
+    tmp_path, monkeypatch
+):
+    """The standalone CLI bypasses create_app(), so it must install the
+    settings-loaded master key before runner decrypts secret_config.
+    """
+    monkeypatch.delenv("FUNDS_DASHBOARD_MASTER_KEY", raising=False)
+    monkeypatch.setattr(
+        "funds_dashboard.cli.get_settings",
+        lambda: Settings(
+            database_url=f"sqlite:///{tmp_path}/test.db",
+            FUNDS_DASHBOARD_MASTER_KEY="cli-settings-only-master-key",
+        ),
+    )
+    monkeypatch.setattr("funds_dashboard.db.init_sessionmaker", lambda _: None)
+    captured: dict[str, bool] = {}
+
+    def fake_run_daily_fetch(settings, *, trade_date, force=False):
+        captured["encrypt_ok"] = crypto.decrypt(crypto.encrypt("secret")) == "secret"
+
+        class Result:
+            data_source_version = "20260511#test#1"
+            audit_rows = 1
+            derived_rows = 0
+            failed_windcodes: list[str] = []
+            markdown_path = None
+
+        return Result()
+
+    monkeypatch.setattr(
+        "funds_dashboard.scheduler.runner.run_daily_fetch",
+        fake_run_daily_fetch,
+    )
+
+    from funds_dashboard.cli import fetch
+
+    assert fetch(["--trade-date", "2026-05-11"]) == 0
+    assert captured["encrypt_ok"] is True

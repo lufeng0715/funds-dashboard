@@ -9,12 +9,11 @@ attribute exists for ASGI servers that need it directly
 from __future__ import annotations
 
 import logging
-import os
-
 from fastapi import FastAPI
 
 from .api.v1 import router as v1_router
 from .config import Settings, get_settings
+from .config_store.crypto import install_master_key_env
 from .db import init_sessionmaker
 
 
@@ -45,10 +44,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "restart. See docs/MVP_FIELD_DICTIONARY.md §"
             "Bootstrap secrets."
         )
-    os.environ.setdefault(
-        "FUNDS_DASHBOARD_MASTER_KEY",
-        settings.master_key.get_secret_value(),
-    )
+    install_master_key_env(settings.master_key.get_secret_value())
 
     init_sessionmaker(settings.database_url)
 

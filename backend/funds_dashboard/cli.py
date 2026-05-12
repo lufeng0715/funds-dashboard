@@ -14,6 +14,7 @@ from datetime import date
 import uvicorn
 
 from .config import get_settings
+from .config_store.crypto import install_master_key_env
 
 
 LOG = logging.getLogger(__name__)
@@ -66,6 +67,8 @@ def fetch(argv: list[str] | None = None) -> int:
     from .scheduler.runner import run_daily_fetch
 
     settings = get_settings()
+    if settings.master_key is not None and settings.master_key.get_secret_value():
+        install_master_key_env(settings.master_key.get_secret_value())
     logging.basicConfig(level=settings.log_level)
     # `run_daily_fetch` uses `session_scope()` which depends on the
     # global session factory; FastAPI's lifespan hook (`main.make_app`)
