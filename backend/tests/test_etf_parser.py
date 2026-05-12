@@ -320,3 +320,95 @@ def test_invalid_fund_size_marks_status_but_does_not_crash() -> None:
     # shares wasn't invalid → still VALID
     assert snap.shares == 100.0
     assert snap.shares_status == "VALID"
+
+
+# --- multi-tool parser regression (Vera msg=e1c92857 HIGH#2) --------------
+
+
+def _quote_result_for_parser(match_last: float = 4.951) -> "WindResult":
+    """Fake `fund_data:get_fund_quote` response — last row's MATCH is
+    what `parse_etf_snapshot_from_multi_tool` reads."""
+    from funds_dashboard.wind import WindResult
+    return WindResult(
+        tool_name="fund_data:get_fund_quote",
+        request_payload={"windcode": "510300.SH"},
+        columns=["MATCH", "AVGPRICE", "TIME"],
+        rows=[[1.0, 1.0, "09:30:00"], [match_last, 1.0, "14:59:00"]],
+        raw_stdout='{}',
+    )
+
+
+def _size_result_for_parser(
+    *, name_col: str = "基金简称_中文", name: str = "华泰柏瑞沪深300ETF",
+    size_yi: float = 1686.5965,
+) -> "WindResult":
+    """Fake `analytics_data:get_financial_data` response with
+    configurable name-column header so we can test the fallback."""
+    from funds_dashboard.wind import WindResult
+    return WindResult(
+        tool_name="analytics_data:get_financial_data",
+        request_payload={"question": "510300.SH 最新基金规模"},
+        columns=["Wind代码", name_col, "最新基金规模"],
+        rows=[["510300.SH", name, size_yi]],
+        raw_stdout='{}',
+    )
+
+
+def test_multi_tool_parser_accepts_real_wind_column_name() -> None:
+    """Real-Wind column name `基金简称_中文` (Vera msg=e1c92857) must
+    be parsed correctly. Previously the parser only looked up
+    `证券简称` so `name` came back None despite valid data being
+    present."""
+    from funds_dashboard.parsers.etf_snapshot import (
+        EtfSnapshotMultiInput,
+        parse_etf_snapshot_from_multi_tool,
+    )
+    snap = parse_etf_snapshot_from_multi_tool(EtfSnapshotMultiInput(
+        windcode="510300.SH",
+        quote_result=_quote_result_for_parser(match_last=4.951),
+        size_result=_size_result_for_parser(name_col="基金简称_中文"),
+        trade_date="2026-05-11",
+        data_source_version="v1",
+        quote_audit_id=1,
+    ))
+    assert snap.name == "华泰柏瑞沪深300ETF"
+    assert snap.fund_size_yuan == 1686.5965 * 1e8
+    assert snap.nav == 4.951
+
+
+def test_multi_tool_parser_falls_back_to_legacy_column_name() -> None:
+    """Backwards compat: if Wind's NL router still emits the
+    original `证券简称` header on some queries, the parser's fallback
+    list catches it."""
+    from funds_dashboard.parsers.etf_snapshot import (
+        EtfSnapshotMultiInput,
+        parse_etf_snapshot_from_multi_tool,
+    )
+    snap = parse_etf_snapshot_from_multi_tool(EtfSnapshotMultiInput(
+        windcode="510300.SH",
+        quote_result=_quote_result_for_parser(),
+        size_result=_size_result_for_parser(name_col="证券简称"),
+        trade_date="2026-05-11",
+        data_source_version="v1",
+        quote_audit_id=1,
+    ))
+    assert snap.name == "华泰柏瑞沪深300ETF"
+
+
+def test_multi_tool_parser_no_match_returns_none() -> None:
+    """Neither `基金简称_中文` nor `证券简称` nor `中文简称` present →
+    name stays None. (Defensive: parser doesn't fabricate from
+    arbitrary columns.)"""
+    from funds_dashboard.parsers.etf_snapshot import (
+        EtfSnapshotMultiInput,
+        parse_etf_snapshot_from_multi_tool,
+    )
+    snap = parse_etf_snapshot_from_multi_tool(EtfSnapshotMultiInput(
+        windcode="510300.SH",
+        quote_result=_quote_result_for_parser(),
+        size_result=_size_result_for_parser(name_col="其他列名"),
+        trade_date="2026-05-11",
+        data_source_version="v1",
+        quote_audit_id=1,
+    ))
+    assert snap.name is None

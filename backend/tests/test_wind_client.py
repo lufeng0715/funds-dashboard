@@ -145,6 +145,66 @@ def test_tool_name_with_colon_splits_into_server_type_and_tool() -> None:
     )
 
 
+# --- columns shape normalization (Vera msg=c0ac5ba4 HIGH) ----------------
+
+
+def test_columns_list_of_dicts_normalized_to_list_of_strings() -> None:
+    """Real Wind regression (Vera caught on PR #16 first live fetch):
+    `fund_data:get_fund_quote` and `analytics_data:get_financial_data`
+    return `columns` as `list[dict]` (e.g. `[{"name":"MATCH",
+    "type":"float"}, ...]`), not `list[str]` like
+    `get_fund_price_indicators` did.
+
+    Downstream parsers build a `{col: i for i, col in enumerate(cols)}`
+    map which raises `TypeError: unhashable type: 'dict'` if cols is
+    list[dict]. The WindClient normalises both shapes to `list[str]`
+    so every parser sees the same surface regardless of which Wind
+    tool produced the response.
+    """
+    inner_dict_cols = json.dumps({
+        "data": {
+            "columns": [
+                {"name": "MATCH", "type": "float"},
+                {"name": "AVGPRICE", "type": "float"},
+                {"name": "TIME", "type": "string"},
+            ],
+            "rows": [[1.234, 1.0, "14:59:00"]],
+        },
+        "error": None,
+    })
+    envelope = json.dumps({"content": [{"type": "text", "text": inner_dict_cols}]})
+    client = WindClient(node_path="node", cli_script="cli.mjs")
+    with patch("funds_dashboard.wind.subprocess.run") as run_mock:
+        run_mock.return_value = _fake_completed(envelope)
+        result = client.call("fund_data:get_fund_quote", {"windcode": "510300.SH"})
+
+    # Every column entry must be a plain string after normalization.
+    for col in result.columns:
+        assert isinstance(col, str), f"column not normalized to str: {col!r}"
+    assert result.columns == ["MATCH", "AVGPRICE", "TIME"]
+
+
+def test_columns_list_of_strings_passes_through_unchanged() -> None:
+    """The list-of-strings shape (used by `get_fund_price_indicators`)
+    continues to work unchanged after the normalization layer was added."""
+    inner_str_cols = json.dumps({
+        "data": {
+            "columns": ["NAME", "MATCH", "SHARES"],
+            "rows": [["华泰柏瑞", 1.0, 1000.0]],
+        },
+        "error": None,
+    })
+    envelope = json.dumps({"content": [{"type": "text", "text": inner_str_cols}]})
+    client = WindClient(node_path="node", cli_script="cli.mjs")
+    with patch("funds_dashboard.wind.subprocess.run") as run_mock:
+        run_mock.return_value = _fake_completed(envelope)
+        result = client.call(
+            "fund_data:get_fund_price_indicators", {"codes": ["510300.SH"]}
+        )
+
+    assert result.columns == ["NAME", "MATCH", "SHARES"]
+
+
 def test_tool_name_without_colon_routes_to_empty_server_type() -> None:
     """Backwards-compat: a bare tool name (no `<server_type>:` prefix)
     is forwarded with an empty server_type so the CLI returns a clear
@@ -161,3 +221,68 @@ def test_tool_name_without_colon_routes_to_empty_server_type() -> None:
         f"missing-colon must yield empty server_type; got {argv[call_idx + 1]!r}"
     )
     assert argv[call_idx + 2] == "get_fund_quote"
+
+
+# --- analytics_data nested-data unwrap (Vera msg=e1c92857 HIGH#1) ---------
+
+
+def test_analytics_data_nested_data_unwrap() -> None:
+    """Real Wind `analytics_data:get_financial_data` wraps its payload
+    one level deeper than `fund_data:get_fund_quote`:
+
+        inner["data"]["data"][0].columns/rows  (analytics nested)
+        inner["data"].columns/rows            (fund_data direct)
+
+    Vera msg=e1c92857 caught this on PR #16's first real fetch — the
+    parser saw empty `columns=[]` because WindClient only read the
+    first level. This test pins the unwrap so any future refactor
+    that drops the nested-data branch fails immediately.
+    """
+    inner_nested = json.dumps({
+        "data": {
+            "data": [{
+                "columns": [
+                    {"name": "Wind代码", "type": "string"},
+                    {"name": "基金简称_中文", "type": "string"},
+                    {"name": "最新基金规模", "type": "float"},
+                ],
+                "rows": [["510300.SH", "华泰柏瑞沪深300ETF", 1686.5965]],
+            }],
+        },
+        "error": None,
+    })
+    envelope = json.dumps({"content": [{"type": "text", "text": inner_nested}]})
+    client = WindClient(node_path="node", cli_script="cli.mjs")
+    with patch("funds_dashboard.wind.subprocess.run") as run_mock:
+        run_mock.return_value = _fake_completed(envelope)
+        result = client.call(
+            "analytics_data:get_financial_data",
+            {"question": "510300.SH 最新基金规模"},
+        )
+
+    # The nested unwrap + columns normalisation combine to yield a
+    # flat list[str] with 3 entries (not an empty list).
+    assert result.columns == ["Wind代码", "基金简称_中文", "最新基金规模"]
+    assert result.rows == [["510300.SH", "华泰柏瑞沪深300ETF", 1686.5965]]
+
+
+def test_fund_data_direct_data_shape_unchanged() -> None:
+    """Regression: `fund_data:get_fund_quote` shape has columns/rows
+    directly on `inner["data"]` (no nested `data.data[0]`). The
+    unwrap branch must not fire on this shape — it would corrupt the
+    response if it did."""
+    inner_direct = json.dumps({
+        "data": {
+            "columns": [{"name": "MATCH", "type": "float"}],
+            "rows": [[4.951]],
+        },
+        "error": None,
+    })
+    envelope = json.dumps({"content": [{"type": "text", "text": inner_direct}]})
+    client = WindClient(node_path="node", cli_script="cli.mjs")
+    with patch("funds_dashboard.wind.subprocess.run") as run_mock:
+        run_mock.return_value = _fake_completed(envelope)
+        result = client.call("fund_data:get_fund_quote", {"windcode": "510300.SH"})
+
+    assert result.columns == ["MATCH"]
+    assert result.rows == [[4.951]]

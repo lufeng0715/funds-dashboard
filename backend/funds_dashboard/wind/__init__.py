@@ -216,7 +216,39 @@ class WindClient:
             )
 
         data = inner.get("data") or {}
-        columns = list(data.get("columns") or [])
+        # `analytics_data:get_financial_data` wraps its payload one
+        # level deeper: `inner["data"]["data"][0].columns/rows`, while
+        # `fund_data:get_fund_quote` puts columns/rows directly on
+        # `inner["data"]`. Unwrap when the nested shape is detected
+        # (Vera msg=e1c92857 HIGH#1 — real PR #16 fetch saw analytics
+        # response yield empty `columns=[]` until this unwrap landed).
+        if (
+            isinstance(data, dict)
+            and isinstance(data.get("data"), list)
+            and data["data"]
+            and isinstance(data["data"][0], dict)
+        ):
+            data = data["data"][0]
+        # Normalize columns to `list[str]`.
+        #
+        # Wind returns columns in TWO shapes depending on the tool:
+        #   - Plain list (`get_fund_price_indicators`):
+        #     `["NAME", "MATCH", "SHARES", ...]`
+        #   - List of dicts (`get_fund_quote`,
+        #     `analytics_data:get_financial_data`):
+        #     `[{"name": "MATCH", "type": "float"}, ...]`
+        #
+        # Downstream parsers do `{col: i for i, col in enumerate(...)}`
+        # which raises `TypeError: unhashable type: 'dict'` on the
+        # second shape (Vera msg=c0ac5ba4 caught this). Standardise
+        # here so every consumer sees `list[str]` regardless of which
+        # tool produced it; the raw response is still preserved in
+        # `raw_stdout` for audit.
+        raw_columns = data.get("columns") or []
+        columns = [
+            c["name"] if isinstance(c, dict) and "name" in c else c
+            for c in raw_columns
+        ]
         rows = list(data.get("rows") or [])
 
         return WindResult(

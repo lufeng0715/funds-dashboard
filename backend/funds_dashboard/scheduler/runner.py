@@ -42,7 +42,10 @@ from ..db import session_scope
 from ..db.audit import record_etf_snapshots, record_wind_fetch
 from ..db.models import DailyReportProvenance, SecretConfig, WindFetchAudit
 from ..etf_pool import ETF_POOL_V0, active_windcodes
-from ..parsers.etf_snapshot import EtfSnapshotInput, parse_etf_snapshot_rows
+from ..parsers.etf_snapshot import (
+    EtfSnapshotMultiInput,
+    parse_etf_snapshot_from_multi_tool,
+)
 from ..wind import WindClient, WindError
 
 
@@ -141,6 +144,73 @@ def _build_wind_client(settings: Settings, api_key: str | None) -> WindClient:
     )
 
 
+def _safe_wind_call(
+    session: Session,
+    wind: WindClient,
+    *,
+    tool_name: str,
+    payload: dict,
+    trade_date: date,
+    version: str,
+):
+    """Run one Wind tool call + audit the response (or the failure).
+
+    Returns `(result, audit_row)` on success; `(None, None)` on
+    `WindError`. The audit row persists `wind_raw_response` even on
+    the success path so a future post-mortem can replay the exact
+    bytes the backend returned. Linda msg=64b7d14d preserved-fixture
+    rule lives here at the audit-write layer.
+
+    Each tool call gets its own audit row (one Wind call = one
+    `wind_fetch_audit` entry) — Phase 0 design ports through unchanged.
+    """
+    from ..wind import WindResult  # avoid surfacing in module-level deps
+
+    try:
+        result = wind.call(tool_name, payload)
+    except WindError as exc:
+        LOG.warning(
+            "wind fetch failed: tool=%s payload=%s err=%s",
+            tool_name, payload, exc,
+        )
+        return None, None
+    audit = record_wind_fetch(
+        session,
+        result=result,
+        trade_date=trade_date,
+        data_source_version=version,
+    )
+    return result, audit
+
+
+# Sentinel tool_name used by `_empty_wind_result`. Extracted to a
+# module-level constant per Vera msg=a8232116 LOW so any future
+# audit-trail scan (e.g. dashboards filtering by tool) sees the same
+# marker string everywhere rather than a string literal scattered
+# through code.
+_SYNTHETIC_EMPTY_TOOL_NAME = "<synthetic-empty>"
+
+
+def _empty_wind_result(windcode: str):
+    """Sentinel `WindResult` for the case where one of the two-call
+    flow tools failed but the other succeeded.
+
+    Holding a real `WindResult` (vs `None`) keeps the parser's
+    column-index lookup simple — it just returns None for every
+    field. Audit-side this synthetic value is never recorded; only
+    the live tool responses get audit rows.
+    """
+    from ..wind import WindResult
+
+    return WindResult(
+        tool_name=_SYNTHETIC_EMPTY_TOOL_NAME,
+        request_payload={"windcode": windcode},
+        columns=[],
+        rows=[],
+        raw_stdout="",
+    )
+
+
 def _emit_daily_report(
     settings: Settings,
     *,
@@ -193,6 +263,23 @@ def _emit_daily_report(
         "> 缺失原因映射：`invalid_value` = Wind 返回无效值；"
         "`not_returned` = 字段未返回；`not_applicable` = 当前标的不适用。"
         "数值列为 `—` 表示无效或未返回 — **不是 0**。"
+    )
+    lines.append("")
+    # Data-source footnote — Linda msg=2527f6d1 review condition:
+    # NAV / fund_size 来源必须可解释，不能和正式日终单位净值混淆。
+    # Phase 0 runner uses the available Wind tools (the original
+    # structured `fund_data:get_fund_price_indicators` is currently
+    # down on the Wind backend); when it comes back the runner can
+    # be swapped to use it again without changing this report shape.
+    lines.append(
+        "> **字段来源**："
+        "`基金规模` 来自 `analytics_data:get_financial_data` NL 查询（"
+        "Wind 结构化 JSON 返回，非自由文本）；"
+        "其他字段（`净值` / `份额` / `折溢价` / `累计净值` / `涨跌幅`）原本应由 "
+        "`fund_data:get_fund_price_indicators` 提供，但该工具当前 Wind 后端"
+        "不可用，故未在表中显示 — 未填字段一律 `MISSING/not_returned`，"
+        "**不是 0**。`get_fund_quote` 的 intraday MATCH 价已写入 "
+        "`etf_daily_snapshot.nav` 作为日间价格代理（非日终单位净值）。"
     )
     lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -254,49 +341,81 @@ def run_daily_fetch(
         audit_total = 0
 
         for windcode in active_windcodes():
-            try:
-                wind_result = wind.call(
-                    "fund_data:get_fund_price_indicators",
-                    {"codes": [windcode]},
-                )
-            except WindError as exc:
-                LOG.warning("wind fetch failed for %s: %s", windcode, exc)
-                failed.append(windcode)
-                # Still emit a row in the report so the reader sees the
-                # gap. Empty values land as `—` (parser handles None).
-                report_rows.append((windcode, "—", None, "MISSING", "not_returned"))
-                continue
-
-            audit = record_wind_fetch(
+            # Two-call flow per ETF (PR (d) runner-fund-data-tool-switch):
+            # `get_fund_quote` for intraday MATCH (NAV proxy) +
+            # `analytics_data:get_financial_data` for name + fund_size.
+            # The original `get_fund_price_indicators` probe is broken
+            # on the Wind backend right now (Alex msg=293ecab0); both
+            # replacements were verified working against the same key.
+            #
+            # Audit invariant (Linda + Vera): persist BOTH raw responses
+            # as separate `wind_fetch_audit` rows so any future Wind
+            # tool surprise can be reproduced from `wind_raw_response`
+            # without needing the broken upstream.
+            quote_result, quote_audit = _safe_wind_call(
                 session,
-                result=wind_result,
+                wind,
+                tool_name="fund_data:get_fund_quote",
+                payload={"windcode": windcode},
                 trade_date=trade_date,
-                data_source_version=version,
+                version=version,
             )
+            if quote_result is None:
+                LOG.warning("get_fund_quote failed for %s", windcode)
+                failed.append(windcode)
+                report_rows.append(
+                    (windcode, "—", None, "MISSING", "not_returned")
+                )
+                continue
             audit_total += 1
 
-            parsed = parse_etf_snapshot_rows(
-                EtfSnapshotInput(
-                    wind_result=wind_result,
+            size_result, _size_audit = _safe_wind_call(
+                session,
+                wind,
+                tool_name="analytics_data:get_financial_data",
+                payload={
+                    "question": f"{windcode} 最新基金规模 中文简称"
+                },
+                trade_date=trade_date,
+                version=version,
+            )
+            if size_result is None:
+                # The price-only path can still produce a row (NAV
+                # known), but without a name/size the row's value is
+                # limited. Surface as MISSING/not_returned on size
+                # rather than skip — feng-lu prefers partial visibility
+                # over hidden failures.
+                LOG.warning(
+                    "analytics_data:get_financial_data failed for %s "
+                    "— fund_size_yuan / name will be MISSING",
+                    windcode,
+                )
+            else:
+                audit_total += 1
+
+            snap = parse_etf_snapshot_from_multi_tool(
+                EtfSnapshotMultiInput(
+                    windcode=windcode,
+                    quote_result=quote_result,
+                    size_result=size_result or _empty_wind_result(windcode),
                     trade_date=trade_date.isoformat(),
                     data_source_version=version,
-                    wind_fetch_audit_id=audit.id,
+                    quote_audit_id=quote_audit.id,
                 )
             )
-            inserted = record_etf_snapshots(session, parsed)
-            audit.derived_record_count = inserted
+            inserted = record_etf_snapshots(session, [snap])
+            quote_audit.derived_record_count = inserted
             derived_total += inserted
 
-            for snap in parsed:
-                report_rows.append(
-                    (
-                        snap.windcode,
-                        snap.name or windcode,
-                        snap.fund_size_yuan,
-                        snap.shares_status,
-                        snap.missing_reason,
-                    )
+            report_rows.append(
+                (
+                    snap.windcode,
+                    snap.name or windcode,
+                    snap.fund_size_yuan,
+                    snap.shares_status,
+                    snap.missing_reason,
                 )
+            )
 
         markdown_path = _emit_daily_report(
             settings,
