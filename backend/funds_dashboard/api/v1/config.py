@@ -304,6 +304,26 @@ def delete_secret(
     return SecretDeleteResponse(name=name, deleted=True)
 
 
+# Health-probe Wind tool. We use `fund_data:get_fund_quote` against
+# the most stable Chinese ETF (`510300.SH`, CSI 300 — won't be
+# delisted anytime soon) instead of the original
+# `fund_data:get_fund_price_indicators` probe because the latter was
+# returning `TOOL_ERROR: 服务暂时不可用，请稍后重试` for every call
+# regardless of key validity, making the "测试连接" button useless to
+# distinguish "bad key" from "Wind backend out". Alex msg=293ecab0
+# captured the evidence (3/3 retries identical failure while
+# `get_fund_quote` + `analytics_data:get_financial_data` worked against
+# the same key).
+#
+# `get_fund_quote` is also a structured fund-data call (matches the
+# original probe's intent), unlike NL-based `analytics_data` queries
+# which would change the test's semantic meaning. The dev cost of
+# pulling ~60 rows on a button click is negligible — this endpoint is
+# admin-clicked, not polled.
+_PROBE_TOOL = "fund_data:get_fund_quote"
+_PROBE_PAYLOAD = {"windcode": "510300.SH"}
+
+
 @router.post("/test/wind", response_model=WindTestResponse)
 def test_wind_connection(
     request: Request,
@@ -320,11 +340,15 @@ def test_wind_connection(
         api_key=api_key,
     )
     try:
-        client.call("fund_data:get_fund_price_indicators", {"probe": True})
+        client.call(_PROBE_TOOL, _PROBE_PAYLOAD)
     except WindError as exc:
+        # Surface the underlying Wind error message so the operator
+        # can tell "key rejected" from "backend out" — the old
+        # generic `"Wind connection test failed."` string left feng-lu
+        # (msg=22188ff4) unable to tell which case he was in.
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Wind connection test failed.",
+            detail=f"Wind connection test failed: {exc}",
         ) from exc
     latency_ms = round((time.perf_counter() - start) * 1000, 3)
     _audit(

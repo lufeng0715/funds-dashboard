@@ -196,3 +196,28 @@ def test_wind_connection_test_returns_operational_status_without_key(tmp_path) -
     assert secret not in str(body)
     assert "wind_api_key" not in body
     assert "ak_connection_test" not in str(body)
+
+
+def test_wind_connection_test_uses_reachable_fund_quote_probe(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    client = _client(settings)
+    _login(client)
+    client.put(
+        "/api/v1/config/secrets/wind_api_key",
+        json={"value": "ak_connection_test_SECRET1234"},
+    )
+
+    with patch("funds_dashboard.api.v1.config.WindClient") as wind_client_cls:
+        wind_client_cls.return_value.call.return_value = WindResult(
+            tool_name="fund_data:get_fund_quote",
+            request_payload={"windcode": "510300.SH"},
+            columns=["time", "price"],
+            rows=[["2026-05-11 14:59:00", 4.966]],
+            raw_stdout='{"content":[]}',
+        )
+        response = client.post("/api/v1/config/test/wind")
+
+    assert response.status_code == 200
+    wind_client_cls.return_value.call.assert_called_once_with(
+        "fund_data:get_fund_quote", {"windcode": "510300.SH"}
+    )

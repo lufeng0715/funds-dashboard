@@ -16,6 +16,30 @@ function handleConfigFetch(input: RequestInfo | URL, init?: RequestInit) {
   const url = String(input)
   const method = init?.method ?? 'GET'
 
+  if (url.endsWith('/api/v1/etf/snapshots')) {
+    return mockJson({
+      trade_date: '2026-05-11',
+      data_source_versions: ['20260511#20260512T023410Z#demo'],
+      rows: [
+        {
+          windcode: '510300.SH',
+          name: '华泰柏瑞沪深300ETF',
+          trade_date: '2026-05-11',
+          fund_size_yuan: 168659650000,
+          nav: null,
+          cumulative_nav: null,
+          change_range: null,
+          iopv: null,
+          forward_discount: null,
+          shares: null,
+          shares_status: 'MISSING',
+          missing_reason: 'not_returned',
+          data_source_version: '20260511#20260512T023410Z#demo',
+        },
+      ],
+    })
+  }
+
   if (url.endsWith('/api/v1/config/status')) {
     return mockJson({
       secrets: {
@@ -170,6 +194,37 @@ describe('config page', () => {
     expect(Storage.prototype.setItem).not.toHaveBeenCalled()
   })
 
+  it('shows auth-specific copy for ETF snapshots and Wind key save before login', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (
+        url.endsWith('/api/v1/config/status') ||
+        url.endsWith('/api/v1/config/audit') ||
+        url.endsWith('/api/v1/etf/snapshots')
+      ) {
+        return mockJson({ detail: 'Not authenticated' }, 401)
+      }
+      return handleConfigFetch(input)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: '登录' })).toBeInTheDocument()
+    expect(screen.getByText('请先登录后查看 ETF 快照。')).toBeInTheDocument()
+
+    const input = screen.getByLabelText('新 Wind API Key')
+    fireEvent.change(input, { target: { value: 'ak_new_secret_1234564321' } })
+    fireEvent.click(screen.getByRole('button', { name: '替换 Key' }))
+
+    expect(screen.getByText('请先登录后保存 Wind Key')).toBeInTheDocument()
+    expect(window.confirm).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/config/secrets/wind_api_key'),
+      expect.objectContaining({ method: 'PUT' }),
+    )
+  })
+
   it('shows delete failure feedback without exposing key material', async () => {
     const fetchMock = installFetchMock()
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
@@ -199,6 +254,26 @@ describe('config page', () => {
     expect(screen.getByText('123 ms')).toBeInTheDocument()
     expect(screen.getByText('Wind CLI')).toBeInTheDocument()
     expect(document.body).not.toHaveTextContent('wind_api_key')
+    expect(document.body).not.toHaveTextContent(apiSecret)
+  })
+
+  it('shows operational Wind test failures without blaming the saved key', async () => {
+    const fetchMock = installFetchMock()
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/config/test/wind')) {
+        return mockJson({ detail: 'Wind connection test failed: backend unavailable' }, 502)
+      }
+      return handleConfigFetch(input, init)
+    })
+
+    render(<App />)
+    await screen.findByText('已配置 · ****7890')
+
+    fireEvent.click(screen.getByRole('button', { name: '测试连接' }))
+
+    expect(await screen.findByText('Wind 连接测试失败，请稍后重试')).toBeInTheDocument()
+    expect(screen.queryByText('检查 key 或点击替换')).not.toBeInTheDocument()
     expect(document.body).not.toHaveTextContent(apiSecret)
   })
 
