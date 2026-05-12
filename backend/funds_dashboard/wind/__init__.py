@@ -216,7 +216,26 @@ class WindClient:
             )
 
         data = inner.get("data") or {}
-        columns = list(data.get("columns") or [])
+        # Normalize columns to `list[str]`.
+        #
+        # Wind returns columns in TWO shapes depending on the tool:
+        #   - Plain list (`get_fund_price_indicators`):
+        #     `["NAME", "MATCH", "SHARES", ...]`
+        #   - List of dicts (`get_fund_quote`,
+        #     `analytics_data:get_financial_data`):
+        #     `[{"name": "MATCH", "type": "float"}, ...]`
+        #
+        # Downstream parsers do `{col: i for i, col in enumerate(...)}`
+        # which raises `TypeError: unhashable type: 'dict'` on the
+        # second shape (Vera msg=c0ac5ba4 caught this on PR #16 first
+        # real-Wind fetch). Standardise here so every consumer sees
+        # `list[str]` regardless of which tool produced it; the raw
+        # response is still preserved in `raw_stdout` for audit.
+        raw_columns = data.get("columns") or []
+        columns = [
+            c["name"] if isinstance(c, dict) and "name" in c else c
+            for c in raw_columns
+        ]
         rows = list(data.get("rows") or [])
 
         return WindResult(
