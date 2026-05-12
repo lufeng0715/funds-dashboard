@@ -257,6 +257,23 @@ def _emit_daily_report(
         "数值列为 `—` 表示无效或未返回 — **不是 0**。"
     )
     lines.append("")
+    # Data-source footnote — Linda msg=2527f6d1 review condition:
+    # NAV / fund_size 来源必须可解释，不能和正式日终单位净值混淆。
+    # Phase 0 runner uses the available Wind tools (the original
+    # structured `fund_data:get_fund_price_indicators` is currently
+    # down on the Wind backend); when it comes back the runner can
+    # be swapped to use it again without changing this report shape.
+    lines.append(
+        "> **字段来源**："
+        "`基金规模` 来自 `analytics_data:get_financial_data` NL 查询（"
+        "Wind 结构化 JSON 返回，非自由文本）；"
+        "其他字段（`净值` / `份额` / `折溢价` / `累计净值` / `涨跌幅`）原本应由 "
+        "`fund_data:get_fund_price_indicators` 提供，但该工具当前 Wind 后端"
+        "不可用，故未在表中显示 — 未填字段一律 `MISSING/not_returned`，"
+        "**不是 0**。`get_fund_quote` 的 intraday MATCH 价已写入 "
+        "`etf_daily_snapshot.nav` 作为日间价格代理（非日终单位净值）。"
+    )
+    lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
 
