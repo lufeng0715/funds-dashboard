@@ -97,9 +97,19 @@ def _quote_result(windcode: str, *, last_match: object = 1.234) -> WindResult:
 
 
 def _size_result(
-    windcode: str, *, name: str | None = None, size_yi: float = 100.0
+    windcode: str,
+    *,
+    name: str | None = None,
+    size_yi: float = 100.0,
+    name_column: str = "基金简称_中文",
 ) -> WindResult:
     """Fake `analytics_data:get_financial_data` size response.
+
+    `name_column` defaults to `基金简称_中文` — the real-Wind column
+    header captured by Vera msg=e1c92857 on PR #16's first live fetch.
+    Pass `name_column="证券简称"` to verify the parser's fallback
+    accepts the alternate header name (defence-in-depth against Wind
+    NL router picking different phrasings).
 
     `name` defaults to `f"name-{windcode}"` so tests can keep the
     "name landed" assertion. Pass explicit `None` to simulate a Wind
@@ -109,7 +119,7 @@ def _size_result(
     return WindResult(
         tool_name="analytics_data:get_financial_data",
         request_payload={"question": f"{windcode} 最新基金规模 中文简称"},
-        columns=["Wind代码", "证券简称", "最新基金规模"],
+        columns=["Wind代码", name_column, "最新基金规模"],
         rows=[[windcode, rendered_name, size_yi]],
         raw_stdout='{"data":{}}',
     )

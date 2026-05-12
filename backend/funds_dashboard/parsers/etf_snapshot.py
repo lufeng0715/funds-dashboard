@@ -199,8 +199,21 @@ def _read_cell(
 
 _QUOTE_MATCH_COL = "MATCH"
 
-_ANALYTICS_NAME_COL = "证券简称"
-_ANALYTICS_FUND_SIZE_COL = "最新基金规模"
+# Wind `analytics_data:get_financial_data` returns column headers that
+# vary slightly depending on the question phrasing — Vera msg=e1c92857
+# caught that the real Wind backend uses `基金简称_中文` even when our
+# NL question asked for `中文简称`. We accept BOTH variants in priority
+# order so the parser works regardless of which header form the NL
+# router picked. New variants can be appended without other code changes.
+_ANALYTICS_NAME_COLS: tuple[str, ...] = (
+    "基金简称_中文",  # real-Wind probe shape (Vera msg=e1c92857)
+    "证券简称",        # original spec / mock test shape
+    "中文简称",        # historical alternate phrasing
+)
+_ANALYTICS_FUND_SIZE_COLS: tuple[str, ...] = (
+    "最新基金规模",
+    "基金规模",
+)
 
 
 @dataclass(frozen=True)
@@ -245,23 +258,44 @@ def _extract_last_match_price(quote: WindResult) -> float | None:
     return _coerce_float(raw)
 
 
+def _first_present_index(
+    column_index: dict[str, int], candidates: tuple[str, ...]
+) -> int | None:
+    """Return the index of the first column from `candidates` present
+    in `column_index`, or None if none of them match.
+
+    Used to handle Wind's varying NL response column names (Vera
+    msg=e1c92857: real backend used `基金简称_中文` while our spec /
+    mock used `证券简称`).
+    """
+    for name in candidates:
+        idx = column_index.get(name)
+        if idx is not None:
+            return idx
+    return None
+
+
 def _extract_analytics_name_and_size(
     size: WindResult,
 ) -> tuple[str | None, float | None]:
     """Pull `(name, fund_size_yuan)` from a Wind analytics_data response.
 
     The probe shape:
-        columns = ["Wind代码", "证券简称", "最新基金规模"]
+        columns = ["Wind代码", "基金简称_中文", "最新基金规模"]
         rows = [["510300.SH", "华泰柏瑞沪深300ETF", 1686.5965]]
     Fund size is in 亿元 — multiply by 1e8 to normalize to 元 (the
     canonical unit `EtfDailySnapshot.fund_size_yuan` uses).
+
+    Column-name probing uses the fallback lists declared at module
+    top so the parser keeps working when Wind's NL router picks a
+    different header form for the same logical field.
     """
     column_index = {name: i for i, name in enumerate(size.columns)}
     if not size.rows:
         return None, None
     row = size.rows[0]
-    name_idx = column_index.get(_ANALYTICS_NAME_COL)
-    size_idx = column_index.get(_ANALYTICS_FUND_SIZE_COL)
+    name_idx = _first_present_index(column_index, _ANALYTICS_NAME_COLS)
+    size_idx = _first_present_index(column_index, _ANALYTICS_FUND_SIZE_COLS)
     name: str | None = None
     if name_idx is not None and name_idx < len(row):
         raw_name = row[name_idx]
