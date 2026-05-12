@@ -66,7 +66,8 @@ def test_linda_real_probe_510300_shares_invalid_does_not_break_other_fields() ->
     assert snap.windcode == "510300.SH"
     assert snap.name == "沪深300ETF"
     assert snap.fund_size_yuan == pytest.approx(1.99914e11)
-    assert snap.nav == 4.9685
+    # NETVALUE column → `unit_nav` after PR e rename.
+    assert snap.unit_nav == 4.9685
     assert snap.change_range == 1.64
 
 
@@ -101,7 +102,7 @@ def test_linda_real_probe_persists_with_correct_status_to_db(session: Session) -
     assert row.shares_status == "INVALID"
     assert row.missing_reason == "invalid_value"
     assert row.fund_size_yuan == pytest.approx(1.99914e11)
-    assert row.nav == 4.9685
+    assert row.unit_nav == 4.9685  # NETVALUE → unit_nav (PR e)
 
 
 def test_linda_probe_response_contains_no_secrets_after_audit(

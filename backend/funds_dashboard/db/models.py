@@ -172,7 +172,17 @@ class EtfDailySnapshot(Base):
 
     name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     fund_size_yuan: Mapped[float | None] = mapped_column(nullable=True)
-    nav: Mapped[float | None] = mapped_column(nullable=True)
+    # `market_price`: intraday last trade price from
+    # `fund_data:get_fund_quote` MATCH (Linda hardline rename from
+    # `nav`). This is NOT the basis NAV — it's the secondary market
+    # quoted price ETF investors actually buy/sell at. The unit-NAV
+    # is in `unit_nav` below; the daily report disclaimer (Linda
+    # msg=ed1d62dc hardline #3) explains the difference for users.
+    market_price: Mapped[float | None] = mapped_column(nullable=True)
+    # `unit_nav`: basis NAV per share (单位净值) from
+    # `analytics_data:get_financial_data` `最新单位净值`. This is the
+    # actual fund NAV per share (the formal basis NAV pricing point).
+    unit_nav: Mapped[float | None] = mapped_column(nullable=True)
     cumulative_nav: Mapped[float | None] = mapped_column(nullable=True)
     change_range: Mapped[float | None] = mapped_column(nullable=True)
     iopv: Mapped[float | None] = mapped_column(nullable=True)

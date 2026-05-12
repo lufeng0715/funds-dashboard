@@ -265,21 +265,22 @@ def _emit_daily_report(
         "数值列为 `—` 表示无效或未返回 — **不是 0**。"
     )
     lines.append("")
-    # Data-source footnote — Linda msg=2527f6d1 review condition:
-    # NAV / fund_size 来源必须可解释，不能和正式日终单位净值混淆。
-    # Phase 0 runner uses the available Wind tools (the original
-    # structured `fund_data:get_fund_price_indicators` is currently
-    # down on the Wind backend); when it comes back the runner can
-    # be swapped to use it again without changing this report shape.
+    # Data-source footnote — Linda msg=2527f6d1 + msg=ed1d62dc hardline #3.
+    # PR e (post feng-lu msg=440b79ea Wind alt-tool finding):
+    # extended NL question covers shares / unit_nav / iopv from
+    # analytics_data; `market_price` (renamed from `nav`) explicitly
+    # not the same number as the basis unit NAV.
     lines.append(
-        "> **字段来源**："
-        "`基金规模` 来自 `analytics_data:get_financial_data` NL 查询（"
-        "Wind 结构化 JSON 返回，非自由文本）；"
-        "其他字段（`净值` / `份额` / `折溢价` / `累计净值` / `涨跌幅`）原本应由 "
-        "`fund_data:get_fund_price_indicators` 提供，但该工具当前 Wind 后端"
-        "不可用，故未在表中显示 — 未填字段一律 `MISSING/not_returned`，"
-        "**不是 0**。`get_fund_quote` 的 intraday MATCH 价已写入 "
-        "`etf_daily_snapshot.nav` 作为日间价格代理（非日终单位净值）。"
+        "> **字段来源 + 价/净值口径说明**：\n"
+        "> • `市场价 (market_price)` 来自 `fund_data:get_fund_quote` 的 "
+        "intraday MATCH（二级市场最新成交价，**不是基金单位净值**）。\n"
+        "> • `单位净值 (unit_nav)` / `份额 (shares)` / `基金规模` / "
+        "`实时IOPV (iopv)` / `中文简称` 来自 "
+        "`analytics_data:get_financial_data` 一次 NL 查询（"
+        "Wind 结构化 JSON 返回，非自由文本）。\n"
+        "> • `累计净值 / 折溢价 / 涨跌幅` 暂未覆盖（需要 "
+        "`fund_data:get_fund_price_indicators` 路径恢复 schema 后接回）"
+        "—— 未填字段一律 `MISSING/not_returned`，**不是 0**。"
     )
     lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -369,12 +370,20 @@ def run_daily_fetch(
                 continue
             audit_total += 1
 
+            # Extended NL question (PR e, per feng-lu msg=440b79ea +
+            # Alex Wind alt-tool finding msg=2e6f71dc): the analytics_data
+            # NL router returns all 5 fields in one call when the
+            # question explicitly names them. This replaces the
+            # previous 2-field (name + size) form, no extra audit
+            # rows needed — the response just carries more columns.
             size_result, _size_audit = _safe_wind_call(
                 session,
                 wind,
                 tool_name="analytics_data:get_financial_data",
                 payload={
-                    "question": f"{windcode} 最新基金规模 中文简称"
+                    "question": (
+                        f"{windcode} 总份额 基金规模 单位净值 实时IOPV 中文简称"
+                    )
                 },
                 trade_date=trade_date,
                 version=version,
