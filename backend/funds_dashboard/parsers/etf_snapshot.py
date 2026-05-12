@@ -311,12 +311,16 @@ class _AnalyticsFields:
     """Per-windcode fields extracted from one `analytics_data` response.
 
     Grouped so `_extract_analytics_fields` returns a typed bundle the
-    caller can deconstruct cleanly, rather than a 5-tuple of `Optional`s.
+    caller can deconstruct cleanly. `shares` carries an explicit
+    `(value, status)` pair — Linda msg=1c413d84 BLOCKER口径: status
+    must be `INVALID` / `MISSING` / `NOT_APPLICABLE` / `VALID`
+    distinguishably, not flattened to "shares is None".
     """
 
     name: str | None
     fund_size_yuan: float | None
     shares: float | None
+    shares_status: SharesStatus
     unit_nav: float | None
     iopv: float | None
 
@@ -343,10 +347,14 @@ def _extract_analytics_fields(size: WindResult) -> _AnalyticsFields:
     """
     column_index = {name: i for i, name in enumerate(size.columns)}
     if not size.rows:
+        # Whole response empty (e.g. analytics_data outage) — every
+        # field is MISSING. Linda口径: still distinguish from
+        # INVALID, so report MISSING here (not INVALID).
         return _AnalyticsFields(
             name=None,
             fund_size_yuan=None,
             shares=None,
+            shares_status="MISSING",
             unit_nav=None,
             iopv=None,
         )
@@ -356,7 +364,11 @@ def _extract_analytics_fields(size: WindResult) -> _AnalyticsFields:
     fund_size_yuan = _extract_scaled_numeric(
         row, column_index, _ANALYTICS_FUND_SIZE_COLS, scale=_YI_TO_YUAN,
     )
-    shares = _extract_scaled_numeric(
+    # Shares uses a status-aware extractor — Linda msg=1c413d84
+    # BLOCKER: INVALID / MISSING / NOT_APPLICABLE must surface as
+    # distinct shares_status values, not collapse to a single
+    # "shares is None" branch.
+    shares, shares_status = _extract_shares_with_status(
         row, column_index, _ANALYTICS_SHARES_COLS, scale=_SHARES_WAN_TO_FEN,
     )
     unit_nav = _extract_scaled_numeric(
@@ -369,6 +381,7 @@ def _extract_analytics_fields(size: WindResult) -> _AnalyticsFields:
         name=name,
         fund_size_yuan=fund_size_yuan,
         shares=shares,
+        shares_status=shares_status,
         unit_nav=unit_nav,
         iopv=iopv,
     )
@@ -401,6 +414,10 @@ def _extract_scaled_numeric(
     Returns None when the column is missing, the cell is a Wind null
     marker (INVALID/MISSING/N/A), or coercion fails. Markers are NOT
     coerced to 0 — Linda's no-coerce-to-0 rule (msg=91b45123).
+
+    Use `_extract_shares_with_status` instead when the caller needs
+    to distinguish INVALID from MISSING from NOT_APPLICABLE; this
+    function flattens all three to `None`.
     """
     idx = _first_present_index(column_index, candidates)
     if idx is None or idx >= len(row):
@@ -412,6 +429,44 @@ def _extract_scaled_numeric(
     if numeric is None:
         return None
     return numeric * scale
+
+
+def _extract_shares_with_status(
+    row: list[object],
+    column_index: dict[str, int],
+    candidates: tuple[str, ...],
+    *,
+    scale: float,
+) -> tuple[float | None, SharesStatus]:
+    """Status-aware shares extraction (Linda msg=1c413d84 BLOCKER口径).
+
+    Returns `(value, status)` where status is one of:
+
+      - `INVALID`        — Wind cell said `"INVALID"` / `"Invalid"`
+      - `NOT_APPLICABLE` — Wind cell said `"N/A"` / `"NOT_APPLICABLE"`
+      - `MISSING`        — column missing, cell empty, or coerce failed
+      - `VALID`          — numeric cell (including 0.0)
+
+    The value is `None` for every non-VALID status (Linda's
+    no-coerce-to-0 rule extends here: a marker MUST NOT become 0).
+    `0.0` IS a VALID number — a fund with literally 0 shares
+    outstanding is rare but valid, and must round-trip honestly
+    rather than be treated as missing.
+    """
+    idx = _first_present_index(column_index, candidates)
+    if idx is None or idx >= len(row):
+        return None, "MISSING"
+    raw = row[idx]
+    marker = _classify_marker(raw)
+    if marker is not None:
+        # `_classify_marker` returns the status name verbatim
+        return None, marker
+    numeric = _coerce_float(raw)
+    if numeric is None:
+        # Cell present but coerce failed (unexpected type) — surface
+        # as MISSING so the operator can spot it; never silently 0.
+        return None, "MISSING"
+    return numeric * scale, "VALID"
 
 
 # Back-compat wrapper preserved so existing call sites (and any
@@ -459,10 +514,10 @@ def parse_etf_snapshot_from_multi_tool(
     """
     market_price = _extract_last_match_price(payload.quote_result)
     fields = _extract_analytics_fields(payload.size_result)
-    shares_status: SharesStatus = "VALID" if fields.shares is not None else "MISSING"
-    missing_reason: MissingReason | None = (
-        None if shares_status == "VALID" else "not_returned"
-    )
+    # Linda msg=1c413d84 BLOCKER口径: shares_status is whatever the
+    # extractor reported (INVALID / MISSING / NOT_APPLICABLE / VALID),
+    # NOT a flat "is None → MISSING" classification. The
+    # `_REASON_FOR_STATUS` map provides the matching missing_reason.
     return ParsedEtfSnapshot(
         wind_fetch_audit_id=payload.quote_audit_id,
         data_source_version=payload.data_source_version,
@@ -477,8 +532,8 @@ def parse_etf_snapshot_from_multi_tool(
         iopv=fields.iopv,
         forward_discount=None,
         shares=fields.shares,
-        shares_status=shares_status,
-        missing_reason=missing_reason,
+        shares_status=fields.shares_status,
+        missing_reason=_REASON_FOR_STATUS[fields.shares_status],
     )
 
 

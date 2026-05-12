@@ -506,10 +506,13 @@ def test_multi_tool_parser_handles_alternate_shares_column_name() -> None:
     assert snap.shares_status == "VALID"
 
 
-def test_multi_tool_parser_shares_invalid_marker_propagates() -> None:
-    """A Wind INVALID/missing marker in shares cell must NOT be coerced
-    to 0 — Linda msg=91b45123 no-coerce-to-0 rule. The parser leaves
-    shares=None + status=MISSING (extended NL with marker)."""
+def test_multi_tool_parser_shares_invalid_marker_propagates_as_INVALID() -> None:
+    """Linda msg=1c413d84 BLOCKER口径: a Wind `"INVALID"` cell MUST
+    surface as `shares_status="INVALID"` + `missing_reason="invalid_value"`,
+    NOT collapse to `MISSING/not_returned`. This is the audit / RAG
+    truthfulness contract — INVALID means Wind tried and failed;
+    MISSING means Wind didn't try. Conflating them loses
+    explanability for the daily-report markdown."""
     from funds_dashboard.parsers.etf_snapshot import (
         EtfSnapshotMultiInput,
         parse_etf_snapshot_from_multi_tool,
@@ -531,10 +534,97 @@ def test_multi_tool_parser_shares_invalid_marker_propagates() -> None:
         quote_audit_id=1,
     ))
     assert snap.shares is None
-    assert snap.shares != 0  # NEVER 0
-    assert snap.shares_status == "MISSING"
-    assert snap.missing_reason == "not_returned"
-    # Other fields still extracted (defensive — one bad cell does not
-    # corrupt the rest of the row).
+    assert snap.shares != 0  # Linda no-coerce-to-0 rule
+    assert snap.shares_status == "INVALID"
+    assert snap.missing_reason == "invalid_value"
+    # Other fields still extracted (cell isolation invariant).
     assert snap.fund_size_yuan == pytest.approx(1686.5965 * 1e8)
     assert snap.unit_nav == 4.9685
+
+
+def test_multi_tool_parser_shares_not_applicable_marker_propagates() -> None:
+    """`N/A` / `NOT_APPLICABLE` markers must produce a distinct
+    `NOT_APPLICABLE/not_applicable` status — Linda msg=1c413d84
+    口径 enumerates 4 statuses, not 2."""
+    from funds_dashboard.parsers.etf_snapshot import (
+        EtfSnapshotMultiInput,
+        parse_etf_snapshot_from_multi_tool,
+    )
+    from funds_dashboard.wind import WindResult
+    size = WindResult(
+        tool_name="analytics_data:get_financial_data",
+        request_payload={"question": "510300.SH 总份额 ..."},
+        columns=["Wind代码", "基金简称_中文", "最新总份额", "最新基金规模", "最新单位净值"],
+        rows=[["510300.SH", "华泰柏瑞沪深300ETF", "N/A", 1686.5965, 4.9685]],
+        raw_stdout='{}',
+    )
+    snap = parse_etf_snapshot_from_multi_tool(EtfSnapshotMultiInput(
+        windcode="510300.SH",
+        quote_result=_quote_result_for_parser(),
+        size_result=size,
+        trade_date="2026-05-12",
+        data_source_version="v1",
+        quote_audit_id=1,
+    ))
+    assert snap.shares is None
+    assert snap.shares_status == "NOT_APPLICABLE"
+    assert snap.missing_reason == "not_applicable"
+
+
+def test_multi_tool_parser_shares_column_missing_propagates_as_MISSING() -> None:
+    """When the shares column is entirely absent from the response
+    (Wind NL routing dropped it), status is `MISSING/not_returned` —
+    different from `INVALID` (Wind tried and failed) and from
+    `NOT_APPLICABLE` (instrument-class mismatch)."""
+    from funds_dashboard.parsers.etf_snapshot import (
+        EtfSnapshotMultiInput,
+        parse_etf_snapshot_from_multi_tool,
+    )
+    from funds_dashboard.wind import WindResult
+    size = WindResult(
+        tool_name="analytics_data:get_financial_data",
+        request_payload={"question": "510300.SH 基金规模 中文简称"},
+        columns=["Wind代码", "基金简称_中文", "最新基金规模"],
+        rows=[["510300.SH", "华泰柏瑞沪深300ETF", 1686.5965]],
+        raw_stdout='{}',
+    )
+    snap = parse_etf_snapshot_from_multi_tool(EtfSnapshotMultiInput(
+        windcode="510300.SH",
+        quote_result=_quote_result_for_parser(),
+        size_result=size,
+        trade_date="2026-05-12",
+        data_source_version="v1",
+        quote_audit_id=1,
+    ))
+    assert snap.shares is None
+    assert snap.shares_status == "MISSING"
+    assert snap.missing_reason == "not_returned"
+
+
+def test_multi_tool_parser_shares_zero_stays_VALID() -> None:
+    """`0.0` IS a valid number (a fund with literally 0 outstanding
+    shares is rare but legitimate). Must round-trip as `shares=0.0` +
+    `shares_status="VALID"` — Linda口径: 数值 0 是 VALID，不是缺失."""
+    from funds_dashboard.parsers.etf_snapshot import (
+        EtfSnapshotMultiInput,
+        parse_etf_snapshot_from_multi_tool,
+    )
+    from funds_dashboard.wind import WindResult
+    size = WindResult(
+        tool_name="analytics_data:get_financial_data",
+        request_payload={"question": "510300.SH 总份额 ..."},
+        columns=["Wind代码", "基金简称_中文", "最新总份额", "最新基金规模"],
+        rows=[["510300.SH", "华泰柏瑞沪深300ETF", 0, 1686.5965]],
+        raw_stdout='{}',
+    )
+    snap = parse_etf_snapshot_from_multi_tool(EtfSnapshotMultiInput(
+        windcode="510300.SH",
+        quote_result=_quote_result_for_parser(),
+        size_result=size,
+        trade_date="2026-05-12",
+        data_source_version="v1",
+        quote_audit_id=1,
+    ))
+    assert snap.shares == 0.0
+    assert snap.shares_status == "VALID"
+    assert snap.missing_reason is None
